@@ -1,7 +1,7 @@
 --[[
-reaper_ai_track_namer.lua
+AiNOMEATOR.lua
 
-FASE 4: integracao com o Reaper — com UX de progresso em tempo real.
+Integracao com o Reaper — com UX de progresso em tempo real.
 
 O que esse script faz:
   1. Escaneia as tracks do projeto (por padrao TODAS, nao so as selecionadas).
@@ -21,7 +21,7 @@ Requisitos:
 
 Como instalar no Reaper:
   Actions > Show action list... > New action... > Load ReaScript...
-  selecione este arquivo (reaper_ai_track_namer.lua). Depois e so rodar
+  selecione este arquivo (AiNOMEATOR.lua). Depois e so rodar
   a acao sempre que quiser (ou atribuir um atalho de teclado).
 ]]
 
@@ -665,6 +665,8 @@ local function start_analysis()
   else
     python_args = python_args .. ' --quality ' .. t('opt_quality_normal')
   end
+
+  python_args = python_args .. ' --output-language ' .. sanitize_shell_arg(lang)
 
   if color_prompt ~= "" then
     local escaped_prompt = sanitize_shell_arg(color_prompt)

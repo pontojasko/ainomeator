@@ -87,7 +87,7 @@ def load_colors_ini(path):
 
 def main():
     log("=========================================")
-    log(" Reaper AI Track Namer - Sincronizar SWS ")
+    log(" AiNOMEATOR - Sincronizar SWS ")
     log("=========================================\n")
     
     # 1. Verifica se o REAPER está aberto

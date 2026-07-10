@@ -99,7 +99,7 @@ def _sanitize(text):
     return str(text).replace("\t", " ").replace("\n", " ").replace("\r", " ").strip()
 
 
-def process_one(client, idx, audio_path, start_sec, dur_sec, shared_models, segment_seconds, quality, api_available):
+def process_one(client, idx, audio_path, start_sec, dur_sec, shared_models, segment_seconds, quality, api_available, output_language):
     if not api_available:
         return idx, {"category": "outro", "instrument": "Audio", "confidence": 0.0, "_model_usado": "fallback_universal"}
 
@@ -156,7 +156,8 @@ def process_one(client, idx, audio_path, start_sec, dur_sec, shared_models, segm
 
         result = classify_audio_bytes(
             client, audio_bytes, mime_type=mime_type,
-            models=current_models, on_model_failed=on_model_failed
+            models=current_models, on_model_failed=on_model_failed,
+            output_language=output_language
         )
         return idx, result
     except Exception as e:
@@ -290,6 +291,8 @@ def main():
                          help="Caminho do arquivo de cores .ini")
     parser.add_argument("--quality", default="normal",
                          help="Qualidade de analise: 'normal' ou 'alta'")
+    parser.add_argument("--output-language", choices=["pt", "en"], default="pt",
+                         help="idioma do campo instrument: pt ou en (padrao: pt)")
     args = parser.parse_args()
 
     load_dotenv()
@@ -340,7 +343,7 @@ def main():
 
     with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
         futures = {
-            pool.submit(process_one, client, idx, path, start, dur, shared_models, args.segment_seconds, args.quality, api_available): idx
+            pool.submit(process_one, client, idx, path, start, dur, shared_models, args.segment_seconds, args.quality, api_available, args.output_language): idx
             for idx, path, start, dur in entries
         }
         for future in as_completed(futures):

@@ -54,17 +54,17 @@ if model_env:
 else:
     MODELOS_FALLBACK = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash"]
 
-DEFAULT_PROMPT = """Voce e um assistente de organizacao de faixas de audio dentro de uma DAW (estacao de audio digital).
+DEFAULT_PROMPT_PT = """Voce e um assistente de organizacao de faixas de audio dentro de uma DAW (estacao de audio digital).
 
 Ouca este trecho de audio, que e uma unica faixa isolada de uma sessao de gravacao multitrack (nao e a mixagem completa).
 
 Identifique a fonte sonora principal e responda APENAS com um JSON valido, sem nenhum texto antes ou depois, exatamente neste formato:
 
 {
-  "instrument": "nome curto e especifico em portugues descrevendo o timbre e a funcao, ex: 'guitarra base distorcida', 'vocal principal', 'baixo acustico pizzicato', 'synth ritmico de acordes', 'flauta em acordes (sampler)'",
-  "category": "uma destas opcoes exatas: vocal, guitarra, baixo, bateria, teclado, synth, sopro, cordas, outro",
-  "confidence": numero de 0.0 a 1.0 indicando sua confianca na identificacao,
-  "notes": "uma frase curta com qualquer observacao relevante (ex: 'audio com ruido de fundo', 'silencio quase total', 'multiplos instrumentos misturados')"
+    "instrument": "nome curto e especifico em portugues descrevendo o timbre e a funcao, ex: 'guitarra base distorcida', 'vocal principal', 'baixo acustico pizzicato', 'synth ritmico de acordes', 'flauta em acordes (sampler)'",
+    "category": "uma destas opcoes exatas: vocal, guitarra, baixo, bateria, teclado, synth, sopro, cordas, outro",
+    "confidence": numero de 0.0 a 1.0 indicando sua confianca na identificacao,
+    "notes": "uma frase curta com qualquer observacao relevante (ex: 'audio com ruido de fundo', 'silencio quase total', 'multiplos instrumentos misturados')"
 }
 
 Atencao a armadilhas comuns de articulacao e timbre:
@@ -76,8 +76,34 @@ Atencao a armadilhas comuns de articulacao e timbre:
 Se o audio estiver em silencio, muito baixo, ou nao for possivel identificar, use category "outro" e confidence baixo, nao invente.
 """
 
+DEFAULT_PROMPT_EN = """You are an assistant for organizing audio tracks inside a DAW.
 
-def load_prompt():
+Listen to this audio excerpt, which is a single isolated track from a multitrack recording session (not the full mix).
+
+Identify the main sound source and respond ONLY with valid JSON, with no text before or after, exactly in this format:
+
+{
+    "instrument": "short and specific name in English describing the timbre and role, e.g. 'distorted rhythm guitar', 'lead vocal', 'pizzicato acoustic bass', 'rhythmic chord synth', 'flute-like sampler chords'",
+    "category": "one of these exact values: vocal, guitarra, baixo, bateria, teclado, synth, sopro, cordas, outro",
+    "confidence": a number from 0.0 to 1.0 indicating your confidence in the identification,
+    "notes": "a short sentence with any relevant observation (e.g. 'background noise', 'almost complete silence', 'multiple instruments mixed')"
+}
+
+Watch out for common articulation and timbre traps:
+- String instruments (bass, cello, double bass, etc.) played pizzicato or slap have a strong percussive attack with a fast decay, but they still PRODUCE PITCHED NOTES. Do not confuse them with drums. If you hear clear musical notes (defined pitch), it is NOT drums — it is a string instrument with percussive articulation.
+- Real drums produce sounds WITHOUT defined musical pitch (kick, snare, hi-hat, cymbals). If clear musical notes are present, even with a percussive attack, do NOT classify it as drums.
+- If a typically monophonic instrument (flute, sax, trumpet) is playing chords or multiple simultaneous notes, it is probably a sampler or synth imitating that timbre. Use category "synth" or "teclado" and describe the timbre and rhythmic/harmonic role in instrument (e.g. 'rhythmic flute-like synth', 'brass sampler chords').
+- Always prioritize the PRESENCE OR ABSENCE OF PITCHED MUSICAL NOTES as the main criterion for distinguishing drums from other instruments.
+
+If the audio is silent, too quiet, or cannot be identified, use category "outro" and low confidence; do not invent.
+"""
+
+
+def build_default_prompt(output_language="pt"):
+    return DEFAULT_PROMPT_EN if output_language == "en" else DEFAULT_PROMPT_PT
+
+
+def load_prompt(output_language="pt"):
     """Le o prompt de analise do arquivo analysis_prompt.txt se existir,
     caso contrario usa o prompt padrao hardcoded."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -87,15 +113,17 @@ def load_prompt():
             with open(prompt_path, "r", encoding="utf-8") as f:
                 content = f.read().strip()
                 if content:
+                    if output_language == "en":
+                        return content + "\n\nImportant: write the 'instrument' field in English. Keep the category values exactly as specified."
                     return content
         except Exception as e:
             print(f"[AVISO] Falha ao ler {prompt_path}: {e}. Usando prompt padrao.")
-    return DEFAULT_PROMPT
+    return build_default_prompt(output_language)
 
 
 def classify_track(client, audio_path, models=None, segment_seconds=8, keep_temp=False,
                     retries_per_model=2, search_start_seconds=None, search_duration_seconds=None,
-                    on_model_failed=None):
+                    on_model_failed=None, output_language="pt"):
     """
     Fluxo completo: acha o trecho de maior energia no arquivo (local, sem IA),
     corta ele pra um wav temporario curto, gera uma versao leve (mono/24kHz)
@@ -135,7 +163,8 @@ def classify_track(client, audio_path, models=None, segment_seconds=8, keep_temp
 
     result = classify_audio_bytes(
         client, audio_bytes, models=models,
-        retries_per_model=retries_per_model, on_model_failed=on_model_failed
+        retries_per_model=retries_per_model, on_model_failed=on_model_failed,
+        output_language=output_language
     )
     result["_segment_start_seconds"] = round(start_sec, 2)
     result["_segment_duration_seconds"] = round(dur_sec, 2)
@@ -150,7 +179,8 @@ def classify_track(client, audio_path, models=None, segment_seconds=8, keep_temp
     return result
 
 
-def classify_audio(client, audio_path, models=None, retries_per_model=2, on_model_failed=None):
+def classify_audio(client, audio_path, models=None, retries_per_model=2, on_model_failed=None,
+                   output_language="pt"):
     """Le um arquivo de audio do disco e manda pro Gemini (via bytes inline).
 
     Mantido por compatibilidade com test_batch.py / uso direto. Nao faz
@@ -165,17 +195,18 @@ def classify_audio(client, audio_path, models=None, retries_per_model=2, on_mode
 
     mime = "audio/wav" if audio_path.lower().endswith(".wav") else "audio/mpeg"
     return classify_audio_bytes(client, audio_bytes, mime_type=mime, models=models,
-                                 retries_per_model=retries_per_model, on_model_failed=on_model_failed)
+                                 retries_per_model=retries_per_model, on_model_failed=on_model_failed,
+                                 output_language=output_language)
 
 
 def classify_audio_bytes(client, audio_bytes, mime_type="audio/wav", models=None,
-                         retries_per_model=2, on_model_failed=None):
+                         retries_per_model=2, on_model_failed=None, output_language="pt"):
     """Manda os bytes do audio direto pro Gemini (sem passar por disco/upload)
     e retorna o dict já parseado (ou dict com 'error').
 
     Usa `types.Part.from_bytes` (dado inline no proprio request) em vez da
     API de upload de arquivos - pra trechos curtos (poucos segundos, mono,
-    16kHz) isso e bem mais rapido, porque evita o ciclo de
+    24kHz) isso e bem mais rapido, porque evita o ciclo de
     upload -> aguardar estado ACTIVE -> gerar conteudo -> (deletar arquivo).
     Importante quando varias tracks sao processadas em paralelo (Fase 4).
 
@@ -200,7 +231,7 @@ def classify_audio_bytes(client, audio_bytes, mime_type="audio/wav", models=None
             try:
                 response = client.models.generate_content(
                     model=model,
-                    contents=[load_prompt(), types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)],
+                    contents=[load_prompt(output_language), types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)],
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
                         temperature=0.1,
@@ -264,6 +295,8 @@ def main():
                          help="ignora o corte e manda o arquivo inteiro (mais lento/caro, use so pra comparar)")
     parser.add_argument("--keep-segment", action="store_true",
                          help="nao apaga o wav temporario do trecho cortado (util pra conferir o que foi analisado)")
+    parser.add_argument("--output-language", choices=["pt", "en"], default="pt",
+                         help="idioma do campo instrument: pt ou en (padrao: pt)")
     args = parser.parse_args()
 
     models = args.models.split(",") if args.models else None
@@ -280,12 +313,13 @@ def main():
 
     if args.full:
         print(f"Analisando (arquivo inteiro): {args.audio_path}")
-        result = classify_audio(client, args.audio_path, models=models)
+        result = classify_audio(client, args.audio_path, models=models, output_language=args.output_language)
     else:
         print(f"Analisando (trecho de {args.segment_seconds:.0f}s de maior energia): {args.audio_path}")
         result = classify_track(
             client, args.audio_path, models=models,
-            segment_seconds=args.segment_seconds, keep_temp=args.keep_segment
+            segment_seconds=args.segment_seconds, keep_temp=args.keep_segment,
+            output_language=args.output_language
         )
         if "_segment_start_seconds" in result:
             print(f"  (trecho analisado: {result['_segment_start_seconds']}s "

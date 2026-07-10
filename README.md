@@ -2,200 +2,236 @@
   <img src="ainomeator_logo.png" alt="AiNOMEATOR logo" width="240" />
 </p>
 
-# Reaper AI Track Namer
+# AiNOMEATOR
 
-Automatically identifies the primary instrument of each track in Reaper using Gemini, then applies a name, color and icon with a lightweight flow that keeps the DAW responsive.
+Identifica automaticamente o instrumento principal de cada faixa no Reaper usando Gemini, e aplica nome, cor e ícone — com interface gráfica e processamento em background para não travar o DAW.
 
 > [!NOTE]
-> The project is split into two stages: local AI validation via Python and final integration with Reaper via ReaScript. First tune classification in the terminal; then bring the pipeline into the DAW.
+> O projeto tem duas etapas: validação local da IA via Python, e integração final no Reaper via ReaScript. Primeiro calibre a classificação no terminal; depois use o pipeline dentro do DAW.
 
-## Overview
-
-The flow is simple:
+## Visão geral
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor User as User
-    participant Lua as reaper_ai_track_namer.lua
+    actor User as Usuário
+    participant Lua as AiNOMEATOR.lua
     participant Py as batch_rename.py
     participant DSP as audio_utils.py
     participant Gemini as Gemini API
 
-    User->>Lua: Run the script in Reaper
-    Lua->>Lua: Read tracks and write a TSV manifest
-    Lua->>Py: Start background processing
-    par For each track
-        Py->>DSP: Extract the most useful audio snippet
-        DSP-->>Py: Short, lightweight WAV
-        Py->>Gemini: Send inline bytes with controlled prompt
-        Gemini-->>Py: JSON with category, instrument and confidence
+    User->>Lua: Executa o script no Reaper
+    Lua->>Lua: Lê faixas e grava manifest TSV
+    Lua->>Py: Inicia processamento em background
+    par Para cada faixa
+        Py->>DSP: Extrai o trecho mais representativo
+        DSP-->>Py: WAV curto e leve
+        Py->>Gemini: Envia bytes inline com prompt controlado
+        Gemini-->>Py: JSON com categoria, instrumento e confiança
     end
-    Py-->>Lua: Write result.tsv
-    Lua->>Lua: Apply name, color and icon
+    Py-->>Lua: Escreve result.tsv
+    Lua->>Lua: Aplica nome, cor e ícone
 ```
 
-The pipeline prioritizes short, representative snippets to reduce cost, latency and context noise. Audio sent to the API is locally reduced to a higher-energy segment, converted to mono and resampled to 24 kHz before the request.
+O pipeline prioriza trechos curtos e representativos para reduzir custo, latência e ruído de contexto. O áudio enviado à API é reduzido localmente para um segmento de maior energia, convertido para mono e reamostrado para 24 kHz antes da requisição.
 
-## Key features
+## Recursos principais
 
-- Single-file or batch audio classification.
-- Reaper integration without blocking the UI.
-- Parallelism using `ThreadPoolExecutor` for API calls (I/O-bound).
-- Automatic Gemini model fallback when a model fails or becomes unavailable.
-- Standardized TSV output to ease exchange between Lua and Python.
-- Local validation tools with `test_single.bat` and `test_batch.bat` before using inside the DAW.
+- Classificação de áudio individual ou em lote.
+- Interface gráfica no Reaper (EN/PT) com progresso em tempo real.
+- Integração sem bloquear a UI do DAW.
+- Paralelismo com `ThreadPoolExecutor` para chamadas à API (I/O-bound).
+- Fallback automático de modelos Gemini quando um falha ou fica indisponível.
+- Paleta de cores personalizável via arquivo `.ini` ou prompt de IA.
+- Sincronização opcional com SWS Auto Color.
+- Saída padronizada em TSV para troca simples entre Lua e Python.
+- Ferramentas de validação local (`test_single.bat`, `test_batch.bat`) antes de usar no DAW.
 
-## Requirements
+## Capturas de tela
 
-- Windows
-- Python 3.9+ in PATH
-- A Gemini API key
-- Reaper for the integration step with `reaper_ai_track_namer.lua`
+<p align="center">
+  <img src="screenshots/script-window.png" alt="Janela do AiNOMEATOR no Reaper" width="320" />
+  <br />
+  <em>Interface do script — configuração de análise, cores e API key</em>
+</p>
+
+<p align="center">
+  <img src="screenshots/reaper-session.png" alt="Faixas nomeadas e coloridas no Reaper" width="720" />
+  <br />
+  <em>Resultado aplicado nas faixas — nomes, cores e ícones gerados pela IA</em>
+</p>
+
+## Requisitos
+
+- Python 3.9+ no PATH
+- Chave da API Gemini
+- Reaper para a etapa de integração com `AiNOMEATOR.lua`
+- Extensão SWS (opcional, para colar a API key com Ctrl+V e sincronizar cores)
 
 > [!TIP]
-> If you only want to test the AI first, you don't need to open Reaper. Use `classify_track.py` and `test_batch.py` with the sample files in `samples/`.
+> Para testar só a IA, não precisa abrir o Reaper. Use `classify_track.py` e `test_batch.py` com arquivos de áudio na pasta `samples/`.
 
-## Installation
+## Instalação
 
-1. Extract the repository to a local folder, e.g. `C:\reaper-ai-namer`.
-2. Run `setup.bat`.
-   - It creates the virtual environment.
-   - It installs dependencies.
-   - It creates a `.env` file at the project root.
-3. Open `.env` and set your key:
+1. Extraia o repositório para uma pasta local, ex.: `C:\reaper-ainomeator`.
+2. Execute `setup.bat`.
+   - Cria o ambiente virtual.
+   - Instala as dependências.
+   - Cria um arquivo `.env` na raiz do projeto.
+3. Abra `.env` e configure sua chave:
 
 ```env
-GEMINI_API_KEY=put_your_key_here
+GEMINI_API_KEY=sua_chave_aqui
 ```
 
-## Quick start
+A chave também pode ser informada diretamente na interface do script no Reaper.
 
-### 1. Test a single audio file
+## Início rápido
 
-Use `test_single.bat` with a short audio file, or run directly:
+### 1. Testar um arquivo de áudio
+
+Use `test_single.bat` com um áudio curto, ou execute diretamente:
 
 ```bash
-python classify_track.py "C:\path\to\audio.wav"
+python classify_track.py "C:\caminho\para\audio.wav"
 ```
 
-By default the script looks for an 8-second segment of highest energy in the file, converts that segment into a lightweight version and only then sends the bytes to Gemini.
+Por padrão o script busca um segmento de 8 segundos com maior energia, gera uma versão leve e só então envia os bytes ao Gemini.
 
-Useful options:
+Opções úteis:
 
-- `--full`: analyze the entire file (usually only for comparison).
-- `--segment-seconds N`: set the length of the analyzed segment.
-- `--keep-segment`: keep temporary WAVs for inspection.
-- `--models a,b,c`: set the model fallback order.
+- `--full`: analisa o arquivo inteiro (geralmente só para comparação).
+- `--segment-seconds N`: define o tamanho do segmento analisado.
+- `--keep-segment`: mantém os WAVs temporários para inspeção.
+- `--models a,b,c`: define a ordem de fallback dos modelos.
+- `--output-language pt|en`: idioma do nome do instrumento.
 
-### 2. Validate in batch
+### 2. Validar em lote
 
-Put samples in `samples/`, fill the `GABARITO` in `test_batch.py` and run `test_batch.bat`.
+Coloque amostras em `samples/`, preencha o `GABARITO` em `test_batch.py` e execute `test_batch.bat`.
 
-This step shows whether the prompt is consistent. If accuracy is poor, adjust the prompt in `classify_track.py` or the optional `analysis_prompt.txt` file.
+Isso mostra se o prompt está consistente. Se a precisão for baixa, ajuste o prompt em `classify_track.py` ou no arquivo opcional `analysis_prompt.txt`.
 
-### 3. Run inside Reaper
+### 3. Rodar no Reaper
 
-In Reaper, load `reaper_ai_track_namer.lua` as a ReaScript:
+Carregue `AiNOMEATOR.lua` como ReaScript:
 
 1. `Actions > Show action list...`
 2. `New action... > Load ReaScript...`
-3. Select `reaper_ai_track_namer.lua`
+3. Selecione `AiNOMEATOR.lua`
 
-When executed, the UI provides these default options:
+A interface oferece:
 
-- Analyze all tracks or only the selected ones.
-- Detailed mode by default, with more conservative audio extraction.
-- `8` seconds of analysis per track.
-- `5` parallel threads.
+- Analisar todas as faixas ou apenas as selecionadas.
+- Modo rápido (3 picos de áudio em MP3 128 kbps) ou detalhado (remove silêncios, envia WAV).
+- Duração de análise por faixa (padrão: 8 segundos).
+- Threads paralelas (padrão: 5).
+- Prompt de cores personalizado (gera paleta via IA).
+- Chave da API Gemini (salva no `.env`).
+- Interface em português ou inglês.
 
-The script prefers the venv Python first. If the venv is missing, it falls back to the system Python and shows warnings in the Reaper console.
+O script prefere o Python do venv. Se o venv não existir, usa o Python do sistema e exibe avisos no console do Reaper.
 
-## How it works
+### 4. Sincronizar cores com SWS (opcional)
 
-### Step 1: Reaper gathers context
+Execute `AiNOMEATOR_sws_sync.lua` no Reaper (ou `sync_sws_colors.bat` fora do DAW) para copiar a paleta de `reaper_ai_track_namer_colors.ini` para o `sws-autocoloricon.ini` do Reaper.
 
-The ReaScript scans project tracks, finds the most representative media item and writes a TSV manifest with:
+## Como funciona
+
+### Etapa 1: Reaper coleta contexto
+
+O ReaScript varre as faixas do projeto, encontra o item de mídia mais representativo e grava um manifest TSV:
 
 ```tsv
 idx	audio_path	start_seconds	duration_seconds
 ```
 
-MIDI, empty tracks or tracks without an audio source are ignored.
+Faixas MIDI, vazias ou sem fonte de áudio são ignoradas.
 
-### Step 2: Python processes and calls the AI
+### Etapa 2: Python processa e chama a IA
 
-`batch_rename.py` reads the manifest, distributes tracks across threads and calls `classify_track.py` / `classify_audio_bytes` for each entry. The result returns in another TSV:
+`batch_rename.py` lê o manifest, distribui as faixas entre threads e chama `classify_track.py` para cada entrada. O resultado volta em outro TSV:
 
 ```tsv
 idx	status	category	instrument	confidence	error
 ```
 
-`status` can be `ok` or `error`. If something fails, the rest of the batch continues processing.
+`status` pode ser `ok` ou `error`. Se algo falhar, o restante do lote continua.
 
-### Step 3: Reaper applies the result
+### Etapa 3: Reaper aplica o resultado
 
-After reading the TSV, the script:
+Após ler o TSV, o script:
 
-- renames the track;
-- applies a coherent color per category;
-- attempts to find a matching icon among Reaper's native icons.
+- renomeia a faixa;
+- aplica cor coerente com a categoria;
+- tenta encontrar um ícone correspondente entre os ícones nativos do Reaper.
 
-## Analysis modes
+## Modos de análise
 
-The backend supports two main paths:
+- **Rápido**: combina três picos de energia em MP3 leve a 128 kbps.
+- **Detalhado**: remove silêncios e envia WAV mais fiel.
 
-- **Quick mode**: combines three energy peaks into a lightweight MP3 at 128 kbps.
-- **Detailed mode**: removes silences and sends a more faithful WAV.
+## Personalização de cores
 
-These modes balance speed and robustness depending on the session.
+Edite `reaper_ai_track_namer_colors.ini` manualmente (formato `chave = #HEX`) ou use o campo de prompt de cores na interface para gerar uma paleta via IA. O arquivo gerado por prompt é salvo como `reaper_ai_track_namer_colors_prompt.ini`.
 
-## File architecture
+## Arquitetura de arquivos
 
 ```text
-reaper-ai-namer/
-├── reaper_ai_track_namer.lua   # Reaper integration
-├── batch_rename.py             # Batch processing and orchestration
-├── classify_track.py           # Classification with Gemini
-├── audio_utils.py              # Snippet extraction, cleanup and resampling
-├── test_batch.py               # Local validation with answer key
-├── setup.bat                   # Creates venv and .env
-├── test_single.bat             # Single-audio test
-├── test_batch.bat              # Batch test
-├── analysis_prompt.txt         # Optional prompt to calibrate the AI
-├── ainomeator_logo.png         # Project logo
-└── samples/                    # Test audio files
+reaper-ainomeator/
+├── AiNOMEATOR.lua              # Integração com Reaper (UI + aplicação de resultados)
+├── AiNOMEATOR_sws_sync.lua     # Atalho ReaScript para sincronizar cores com SWS
+├── batch_rename.py             # Processamento em lote e orquestração
+├── classify_track.py           # Classificação com Gemini
+├── audio_utils.py              # Extração de trechos, limpeza e resample
+├── sync_sws_colors.py          # Sincroniza paleta com SWS Auto Color
+├── test_batch.py               # Validação local com gabarito
+├── setup.bat                   # Cria venv e .env
+├── sync_sws_colors.bat         # Atalho para sync SWS fora do Reaper
+├── test_single.bat             # Teste de áudio único
+├── test_batch.bat              # Teste em lote
+├── analysis_prompt.txt         # Prompt opcional para calibrar a IA
+├── reaper_ai_track_namer_colors.ini  # Paleta de cores padrão
+├── ainomeator_logo.png         # Logo do projeto
+├── screenshots/                # Capturas de tela para o README
+│   ├── script-window.png
+│   └── reaper-session.png
+└── samples/                    # Áudios de teste (crie localmente)
 ```
 
-## Troubleshooting
+## Solução de problemas
 
 > [!IMPORTANT]
-> `503`, `429` errors or model renames are expected from time to time in the Gemini ecosystem. The project attempts to work around these with fallback and retries, but you may still need to adjust model order in `classify_track.py` or via `--models`.
+> Erros `503`, `429` ou renomeação de modelos são esperados de tempos em tempos no ecossistema Gemini. O projeto tenta contornar com fallback e retries, mas pode ser necessário ajustar a ordem dos modelos em `classify_track.py` ou via `--models`.
 
-Common issues:
+Problemas comuns:
 
-- `GEMINI_API_KEY not found`: `.env` was not edited.
-- `403` or `PERMISSION_DENIED`: the key is invalid or the API is not enabled.
-- `file not found`: the audio path is incorrect.
-- Invalid response: test the file with `--keep-segment` and review the prompt.
-- Batch failures due to rate limit: reduce `threads` in Reaper.
+- `GEMINI_API_KEY not found`: `.env` não foi editado ou a chave não foi salva na interface.
+- `403` ou `PERMISSION_DENIED`: chave inválida ou API não habilitada.
+- `file not found`: caminho do áudio incorreto.
+- Resposta inválida: teste com `--keep-segment` e revise o prompt.
+- Falhas em lote por rate limit: reduza as threads no Reaper.
 
-If Reaper reports no result, check in this order:
+Se o Reaper não reportar resultado, verifique nesta ordem:
 
-1. `setup.bat` was run.
-2. `.env` exists and contains the key.
-3. Python is accessible.
-4. The audio file actually exists.
+1. `setup.bat` foi executado.
+2. `.env` existe e contém a chave.
+3. Python está acessível.
+4. O arquivo de áudio realmente existe.
 
-## Technical notes
+## Notas técnicas
 
-- Audio sent to Gemini is reduced locally before the call.
-- Categories are kept in a closed vocabulary to avoid semantic drift.
-- The pipeline uses simple TSV files on both sides to ease integration without extra Lua dependencies.
-- `ffmpeg` is used as fallback when `soundfile` cannot read the original format.
+- O áudio enviado ao Gemini é reduzido localmente antes da chamada (mono, 24 kHz).
+- Categorias usam vocabulário fechado para evitar deriva semântica.
+- O pipeline usa arquivos TSV simples nos dois lados para evitar dependências extras no Lua.
+- `ffmpeg` é usado como fallback quando `soundfile` não lê o formato original.
 
-## Useful next steps
+## Próximos passos
 
-1. Run `test_single.bat` with a known file.
-2. Validate a batch with `test_batch.bat`.
-3. Load `reaper_ai_track_namer.lua` in Reaper and test on a small session.
+1. Execute `test_single.bat` com um arquivo conhecido.
+2. Valide um lote com `test_batch.bat`.
+3. Carregue `AiNOMEATOR.lua` no Reaper e teste em uma sessão pequena.
+
+---
+
+[English version](README_en.md)
