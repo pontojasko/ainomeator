@@ -61,4 +61,4 @@ $RECYCLE.BIN/
 *.log
 
 # === Arquivos gerados em runtime ===
-reaper_ai_track_namer_colors_prompt.ini
+colors_prompt.ini

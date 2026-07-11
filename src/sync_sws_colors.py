@@ -116,9 +116,9 @@ def main():
     
     script_dir = os.path.dirname(os.path.abspath(__file__))
     parent_dir = os.path.dirname(script_dir)
-    colors_ini_path = os.path.join(parent_dir, 'reaper_ai_track_namer_colors.ini')
+    colors_ini_path = os.path.join(parent_dir, 'colors.ini')
     if not os.path.exists(colors_ini_path):
-        colors_ini_path = os.path.join(script_dir, 'reaper_ai_track_namer_colors.ini')
+        colors_ini_path = os.path.join(script_dir, 'colors.ini')
     colors = load_colors_ini(colors_ini_path)
     
     # 4. Define as regras da IA com prioridade (do mais específico ao mais geral)

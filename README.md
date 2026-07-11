@@ -127,7 +127,7 @@ Audio is locally converted to mono, peak-normalized, reduced to a higher-energy 
 
 ### Color Customization & SWS Sync
 
-Edit `reaper_ai_track_namer_colors.ini` manually (format `key = #HEX`) or use the color prompt field in the GUI to generate a palette via AI. The AI-generated file is saved as `reaper_ai_track_namer_colors_prompt.ini`.
+Edit `colors.ini` manually (format `key = #HEX`) or use the color prompt field in the GUI to generate a palette via AI. The AI-generated file is saved as `colors_prompt.ini`.
 If you use the **SWS Extension**, run `AiNOMEATOR_sws_sync.lua` in Reaper (or `sync_sws_colors.bat` outside) to instantly copy the AiNOMEATOR palette to Reaper's native `sws-autocoloricon.ini`.
 
 ### File Architecture
@@ -136,12 +136,11 @@ If you use the **SWS Extension**, run `AiNOMEATOR_sws_sync.lua` in Reaper (or `s
 reaper-ainomeator/
 ├── AiNOMEATOR.lua              # Reaper GUI + result application
 ├── AiNOMEATOR_sws_sync.lua     # ReaScript shortcut for SWS color sync
-├── batch_rename.py             # Batch processing & parallel execution
-├── classify_track.py           # Classification wrapper with Gemini
-├── audio_utils.py              # Peak norm, mono downmix, extraction
-├── sync_sws_colors.py          # Syncs palette with SWS Auto Color
 ├── setup.bat                   # Creates virtual env and .env file
-└── reaper_ai_track_namer_colors.ini  # Default color palette
+├── sync_sws_colors.bat         # CLI shortcut for SWS color sync
+├── colors.ini                  # Default color palette
+├── src/                        # Processing backend in Python
+└── tests/                      # Automated test scripts
 ```
 
 ---

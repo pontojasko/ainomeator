@@ -35,7 +35,7 @@ local is_windows = os_name:find("Win") ~= nil
 local sep = is_windows and "\\" or "/"
 
 local env_path = script_dir .. ".env"
-local config_path = script_dir .. "reaper_ai_track_namer_colors.ini"
+local config_path = script_dir .. "colors.ini"
 
 local lang = reaper.GetExtState("AiNOMEATOR", "language")
 if lang == "" then lang = "en" end -- default to English
@@ -840,7 +840,7 @@ local function start_analysis()
   end
   local config_colors_file = config_path
   if current_theme == "custom" and color_prompt ~= "" then
-    config_colors_file = script_dir .. "reaper_ai_track_namer_colors_prompt.ini"
+    config_colors_file = script_dir .. "colors_prompt.ini"
   end
 
   local track_count = reaper.CountTracks(0)
@@ -946,9 +946,9 @@ local function start_analysis()
   log("╰──────────────────────────────────────────────────────────╯")
   log("")
   log("[ setup ]")
-  local profile_name = "reaper_ai_track_namer_colors.ini"
+  local profile_name = "colors.ini"
   if current_theme == "custom" and color_prompt ~= "" then
-    profile_name = "reaper_ai_track_namer_colors_prompt.ini"
+    profile_name = "colors_prompt.ini"
   end
   log("› profile  : " .. profile_name)
   local backend_name = backend

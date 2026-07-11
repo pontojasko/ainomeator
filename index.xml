@@ -30,7 +30,7 @@ Este script depende de um backend em Python. Para fazê-lo funcionar:
     </reapack>
     <reapack name="AiNOMEATOR_sws_sync.lua" type="script" desc="AiNOMEATOR SWS Color Sync — sync the AI color palette with SWS Auto Color">
       <metadata>
-        <description><![CDATA[Syncs the color palette from reaper_ai_track_namer_colors.ini into Reaper's sws-autocoloricon.ini. Run this after AiNOMEATOR to make SWS Auto Color use the same palette.]]></description>
+        <description><![CDATA[Syncs the color palette from colors.ini into Reaper's sws-autocoloricon.ini. Run this after AiNOMEATOR to make SWS Auto Color use the same palette.]]></description>
         <link rel="website">https://github.com/pontojasko/ReaperAiNOMEATOR</link>
       </metadata>
       <version name="1.0" author="pontojasko" time="2026-07-10T00:00:00Z">
