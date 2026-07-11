@@ -9,9 +9,9 @@
 
   **Have you ever had to export stems from your FL Studio or Ableton project into Reaper, only to find yourself dreading the tedious process of organizing and renaming dozens of messy tracks?**
 
-  🎸 Automatically identify, rename, and colorize your Reaper tracks using AI 🤖
+  Automatically identify, rename, and colorize your Reaper tracks using AI
 
-  [Getting Started](#-getting-started) · [Architecture](#-architecture--features) · [Report Bug](https://github.com/pontojasko/ReaperAiNOMEATOR/issues)
+  [Getting Started](#getting-started) · [Architecture](#architecture--features) · [Report Bug](https://github.com/pontojasko/ReaperAiNOMEATOR/issues)
 
   <br />
   <img src="screenshots/script-window.png" alt="AiNOMEATOR script window" width="320" />
@@ -22,7 +22,7 @@
 
 ---
 
-## 💡 Overview
+## Overview
 
 **The Pain:** Exporting stems from modern DAWs or receiving poorly named tracks from clients usually means spending hours manually renaming, coloring, and organizing the session before you can even start mixing.
 
@@ -30,25 +30,25 @@
 
 **The Result:** A fully structured, color-coded, and properly named Reaper session ready for mixing in minutes, saving you hours of tedious administrative work.
 
-### ⚡ Quick Wins
+### Quick Wins
 - **Time-saver**: Reclaims up to 30 minutes of setup time per session.
 - **Accurate**: Smart Conflict Arbiter and DSP logic prevents AI hallucinations.
 - **Non-blocking**: Keeps your DAW fully responsive during processing.
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 Follow these steps to get AiNOMEATOR running in your Reaper environment.
 
-### 📋 Prerequisites
+### Prerequisites
 
 - **Reaper** installed and configured.
 - **Python 3.9+** installed and added to your system PATH.
 - **Gemini API Key** from Google AI Studio.
 - *(Optional)* SWS Extension for color synchronization.
 
-### 📦 Installation
+### Installation
 
 **Option A: ReaPack (Recommended)**
 1. In Reaper, go to **Extensions > ReaPack > Manage repositories**.
@@ -63,7 +63,7 @@ Follow these steps to get AiNOMEATOR running in your Reaper environment.
 1. Clone or download this repository to a local folder.
 2. Add `AiNOMEATOR.lua` to your Reaper Actions list (**Actions > Show action list > New action > Load ReaScript**).
 
-### ⚙️ Configuration
+### Configuration
 
 You must configure your Python environment and API key before running the script.
 
@@ -81,11 +81,11 @@ GEMINI_API_KEY=your_api_key_here
 
 ---
 
-## 🛠 Usage
+## Usage
 
 Once installed and configured, run the **AiNOMEATOR** script from your Reaper Actions list.
 
-### 🏆 Best Practices
+### Best Practices
 
 To get the most accurate and fastest results, we strongly recommend the following settings in the GUI:
 
@@ -96,7 +96,7 @@ To get the most accurate and fastest results, we strongly recommend the followin
 
 ---
 
-## 🏗 Architecture & Features
+## Architecture & Features
 
 The recommended **Hybrid Heuristic** backend relies on a triple-layer logic to prevent AI hallucinations and misclassifications:
 
@@ -108,13 +108,13 @@ The recommended **Hybrid Heuristic** backend relies on a triple-layer logic to p
    - Blocks vocal/piano tags if the main energy concentration is below 100Hz, forcing a bass/kick classification.
    - Forces a percussion classification if the sound has abrupt decays and no sustain.
 
-### 🔉 Audio Processing
+### Audio Processing
 
 Audio is locally converted to mono, peak-normalized, reduced to a higher-energy segment, and resampled to 24 kHz (or 16/32 kHz depending on the local model) before any AI processing occurs. This ensures low latency, reduced costs, and minimal context noise.
 
 ---
 
-## ❓ Troubleshooting
+## Troubleshooting
 
 > [!NOTE]
 > If Reaper reports no results, ensure that `setup.bat` was run, the `.env` file exists with your key, and Python is accessible in your PATH.
