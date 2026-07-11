@@ -152,6 +152,12 @@ def classify_with_essentia(audio_path, output_language="pt"):
         embedding_extractor, classification_head = _get_models()
 
         audio = MonoLoader(filename=audio_path, sampleRate=16000, resampleQuality=4)()
+        
+        # Peak normalization
+        max_val = np.max(np.abs(audio))
+        if max_val > 0:
+            audio = audio / max_val
+
         embeddings = embedding_extractor(audio)
         predictions = classification_head(embeddings)
 

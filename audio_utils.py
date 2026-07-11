@@ -40,9 +40,11 @@ def _read_audio(path):
     """Le o audio com soundfile. Se falhar (formato nao suportado pelo
     libsndfile instalado, ex: alguns mp3), tenta converter com ffmpeg
     (se estiver disponivel no PATH) pra um wav temporario e le de novo.
-    Se nada funcionar, propaga o erro original."""
+    Se nada funcionar, propaga o erro original.
+    
+    Aplica tambem conversao para mono e peak normalization."""
     try:
-        return sf.read(path, always_2d=True)
+        data, sr = sf.read(path, always_2d=True)
     except Exception as e_original:
         tmp_fd, tmp_wav = tempfile.mkstemp(suffix=".wav", prefix="ai_namer_conv_")
         os.close(tmp_fd)
@@ -52,12 +54,22 @@ def _read_audio(path):
                 check=True, capture_output=True, timeout=60,
             )
             data, sr = sf.read(tmp_wav, always_2d=True)
-            return data, sr
         except Exception:
             raise e_original
         finally:
             if os.path.isfile(tmp_wav):
                 os.remove(tmp_wav)
+
+    # Converter para mono (se tiver mais de um canal)
+    if data.shape[1] > 1:
+        data = data.mean(axis=1, keepdims=True)
+
+    # Peak normalization
+    max_val = np.max(np.abs(data))
+    if max_val > 0:
+        data = data / max_val
+
+    return data, sr
 
 
 def extract_best_segment(audio_path, out_path, segment_seconds=8, hop_seconds=0.5,

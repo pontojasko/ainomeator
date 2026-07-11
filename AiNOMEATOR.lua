@@ -36,9 +36,14 @@ if saved_panns_threads == "" then saved_panns_threads = "1" end
 local backend = reaper.GetExtState("AiNOMEATOR", "backend")
 if backend == "" then backend = "gemini" end
 
+local saved_sort_tracks = reaper.GetExtState("AiNOMEATOR", "sort_tracks")
+if saved_sort_tracks == "" then saved_sort_tracks = "false" end
+
+
 local strings = {
   en = {
-    only_selected = "Analyze selected tracks only",
+    only_selected = "Only selected",
+    sort_tracks = "Sort tracks",
     analysis_mode = "Analysis Mode:",
     mode_fast = "Fast (uses short 8-12s audio segments)",
     mode_detailed = "Detailed (analyzes full WAV / entire item duration)",
@@ -90,7 +95,8 @@ local strings = {
     backend_hybrid_chaining = "Hybrid Chaining (PANNs + Gemini review)",
   },
   pt = {
-    only_selected = "Analisar apenas faixas selecionadas",
+    only_selected = "Apenas sel.",
+    sort_tracks = "Ordenar inst.",
     analysis_mode = "Modo de Análise:",
     mode_fast = "Rápida (analisa trechos curtos de 8-12s)",
     mode_detailed = "Detalhada (analisa WAV original / faixa completa)",
@@ -514,6 +520,120 @@ local function find_icon(icon_files, category)
   return nil
 end
 
+local function sort_project_tracks(track_categories, track_instruments)
+  local total_tracks = reaper.CountTracks(0)
+  if total_tracks <= 1 then return end
+
+  -- build the list of track objects to sort
+  local list = {}
+  for i = 0, total_tracks - 1 do
+    local tr = reaper.GetTrack(0, i)
+    local guid = reaper.GetTrackGUID(tr)
+    
+    local category = track_categories[tr] or "outro"
+    local instrument = track_instruments[tr] or ""
+    local _, tr_name = reaper.GetTrackName(tr)
+    tr_name = tr_name or ""
+
+    -- Check if it is a folder or utility track to adjust categories
+    local is_folder = reaper.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH") == 1
+    if is_folder then
+      category = "pastas"
+    else
+      -- check if it is effects
+      local key_by_name = get_color_key("", "", tr_name)
+      if key_by_name == "efeitos" then
+        category = "efeitos"
+      end
+    end
+
+    -- Determine category weight
+    local weight = 100
+    if category == "guitarra" then
+      weight = 10
+    elseif category == "teclado" then
+      weight = 20
+    elseif category == "synth" then
+      weight = 30
+    elseif category == "cordas" then
+      weight = 40
+    elseif category == "sopro" then
+      weight = 50
+    elseif category == "baixo" then
+      weight = 60
+    elseif category == "bateria" then
+      weight = 70
+    elseif category == "vocal" then
+      weight = 80
+    elseif category == "pastas" then
+      weight = 90
+    elseif category == "efeitos" then
+      weight = 95
+    else
+      weight = 100
+    end
+
+    table.insert(list, {
+      track = tr,
+      guid = guid,
+      weight = weight,
+      instrument = instrument:lower(),
+      name = tr_name:lower(),
+      orig_idx = i
+    })
+  end
+
+  -- Sort the list
+  table.sort(list, function(a, b)
+    if a.weight ~= b.weight then
+      return a.weight < b.weight
+    end
+    -- same category, sort by instrument name
+    if a.instrument ~= b.instrument then
+      return a.instrument < b.instrument
+    end
+    -- same instrument, sort by track name
+    if a.name ~= b.name then
+      return a.name < b.name
+    end
+    -- keep stable using original index
+    return a.orig_idx < b.orig_idx
+  end)
+
+  -- Now apply the new order in Reaper
+  -- First, store selection states
+  local sel_states = {}
+  for i = 0, total_tracks - 1 do
+    local tr = reaper.GetTrack(0, i)
+    sel_states[tr] = reaper.IsTrackSelected(tr)
+  end
+
+  -- Clear folder depths for sorted tracks to prevent nested folder brackets
+  for i = 1, #list do
+    reaper.SetMediaTrackInfo_Value(list[i].track, "I_FOLDERDEPTH", 0)
+  end
+
+  -- Reorder tracks
+  for i = 1, #list do
+    local tr = list[i].track
+    -- Unselect all
+    for j = 0, total_tracks - 1 do
+      local t_j = reaper.GetTrack(0, j)
+      reaper.SetTrackSelected(t_j, false)
+    end
+    -- Select current track to move
+    reaper.SetTrackSelected(tr, true)
+    -- Move it before index i - 1
+    reaper.ReorderSelectedTracks(i - 1, 0)
+  end
+
+  -- Restore selections
+  for j = 0, total_tracks - 1 do
+    local t_j = reaper.GetTrack(0, j)
+    reaper.SetTrackSelected(t_j, sel_states[t_j] or false)
+  end
+end
+
 ------------------------------------------------------------------
 -- 1) opcoes do usuario
 ------------------------------------------------------------------
@@ -741,6 +861,8 @@ local function start_analysis()
 
     local applied, failed = 0, 0
     local processed_tracks = {}
+    local track_categories = {}
+    local track_instruments = {}
 
     for line in io.lines(result_path) do
       if line ~= "" then
@@ -757,6 +879,10 @@ local function start_analysis()
           if status == "ok" and instrument and instrument ~= "" then
             local newname = capitalize(instrument)
             reaper.GetSetMediaTrackInfo_String(info.track, "P_NAME", newname, true)
+
+            -- Salvar categoria e instrumento para ordenação
+            track_categories[info.track] = category
+            track_instruments[info.track] = instrument
 
             local col_key = get_color_key(category, instrument, newname)
             local is_folder = reaper.GetMediaTrackInfo_Value(info.track, "I_FOLDERDEPTH") == 1
@@ -788,20 +914,32 @@ local function start_analysis()
         local track_name = info.name
         local is_folder = reaper.GetMediaTrackInfo_Value(info.track, "I_FOLDERDEPTH") == 1
         local col_key = "outro"
+        local category = "outro"
 
         if is_folder then
           col_key = "pastas"
+          category = "pastas"
         else
           local key_by_name = get_color_key("", "", track_name)
           if key_by_name == "efeitos" then
             col_key = "efeitos"
+            category = "efeitos"
           end
         end
+
+        -- Salvar para ordenação
+        track_categories[info.track] = category
+        track_instruments[info.track] = track_name
 
         local col = config_colors[col_key] or config_colors["outro"]
         reaper.SetTrackColor(info.track, reaper.ColorToNative(col[1], col[2], col[3]) | 0x1000000)
         log(string.format("   [-] Faixa %d: %s -> Cor: %s (RGB: %d,%d,%d) (Utilidade/Ignorada)", idx, track_name, col_key, col[1], col[2], col[3]))
       end
+    end
+
+    if sort_tracks then
+      log("\n[OK] Reordenando as tracks por familia de instrumentos...")
+      sort_project_tracks(track_categories, track_instruments)
     end
 
     reaper.PreventUIRefresh(-1)
@@ -884,8 +1022,9 @@ local layout = {
   lang_en = { x = 241, y = 12, w = 32, h = 16, radio_x = 246, radio_y = 20, radio_r = 3 },
   lang_pt = { x = 276, y = 12, w = 36, h = 16, radio_x = 282, radio_y = 20, radio_r = 3 },
   
-  -- Checkbox
-  only_selected = { x = 30, y = 110, w = 260, h = 20, cb_x = 30, cb_y = 115, cb_size = 18 },
+  -- Checkboxes
+  only_selected = { x = 30, y = 110, w = 125, h = 20, cb_x = 30, cb_y = 115, cb_size = 18 },
+  sort_tracks = { x = 165, y = 110, w = 125, h = 20, cb_x = 165, cb_y = 115, cb_size = 18 },
   
   -- Rádios do modo de análise
   mode_fast = { x = 30, y = 165, w = 260, h = 20, cb_x = 30, cb_y = 170, cb_size = 18 },
@@ -940,11 +1079,12 @@ local function load_logo()
 end
 
 only_selected = false
+sort_tracks = (saved_sort_tracks == "true")
 analysis_mode = "detailed"
 local show_api_key = false
 
 inputs = {
-  { label = t("thread_label"), val = "5", placeholder = "1-20", is_numeric = true, limit = 2, x = 30, y = 390, w = 110, h = 30 },
+  { label = t("thread_label"), val = "1", placeholder = "1-20", is_numeric = true, limit = 2, x = 30, y = 390, w = 110, h = 30 },
   { label = t("prompt_label"), val = "", placeholder = t("prompt_placeholder"), is_numeric = false, limit = 100, x = 30, y = 455, w = 260, h = 30 },
   { label = t("api_label"), val = saved_api_key, placeholder = t("api_placeholder"), is_numeric = false, is_password = true, limit = 200, x = 30, y = 520, w = 170, h = 30 },
   { label = t("local_thread_label"), val = saved_panns_threads, placeholder = "1-16", is_numeric = true, limit = 2, x = 180, y = 390, w = 110, h = 30 }
@@ -978,7 +1118,7 @@ local function sanitize_thread_input(value)
     return ""
   end
 
-  local threads = tonumber(digits) or 5
+  local threads = tonumber(digits) or 1
   if threads < 1 then threads = 1 end
   if threads > 20 then threads = 20 end
   return tostring(threads)
@@ -1180,6 +1320,22 @@ local function draw_gui()
     gfx.r, gfx.g, gfx.b = 0.85, 0.85, 0.85
     gfx.x, gfx.y = opt.cb_x + 28, opt.cb_y + 1
     gfx.drawstr(t("only_selected"))
+
+    -- Checkbox "Ordenar por instrumento"
+    local opt_s = layout.sort_tracks
+    gfx.r, gfx.g, gfx.b = 0.17, 0.17, 0.17
+    gfx.rect(opt_s.cb_x, opt_s.cb_y, opt_s.cb_size, opt_s.cb_size, 1) -- fill
+    gfx.r, gfx.g, gfx.b = 0.27, 0.27, 0.27
+    gfx.rect(opt_s.cb_x, opt_s.cb_y, opt_s.cb_size, opt_s.cb_size, 0) -- border
+    
+    if sort_tracks then
+      gfx.r, gfx.g, gfx.b = 0.53, 0.0, 0.08
+      gfx.rect(opt_s.cb_x + 3, opt_s.cb_y + 3, opt_s.cb_size - 6, opt_s.cb_size - 6, 1)
+    end
+
+    gfx.r, gfx.g, gfx.b = 0.85, 0.85, 0.85
+    gfx.x, gfx.y = opt_s.cb_x + 28, opt_s.cb_y + 1
+    gfx.drawstr(t("sort_tracks"))
     
     -- Linha divisória
     gfx.r, gfx.g, gfx.b = 0.2, 0.2, 0.2
@@ -1492,6 +1648,14 @@ local function update_gui()
         return "redraw"
       end
 
+      -- Clique no checkbox "Ordenar por instrumento"
+      local opt_s = layout.sort_tracks
+      if in_rect(opt_s.x, opt_s.y, opt_s.w, opt_s.h) then
+        sort_tracks = not sort_tracks
+        reaper.SetExtState("AiNOMEATOR", "sort_tracks", sort_tracks and "true" or "false", true)
+        return "redraw"
+      end
+
       -- Clicou Radio 1 "Análise rápida"
       local r1 = layout.mode_fast
       if in_rect(r1.x, r1.y, r1.w, r1.h) then
@@ -1658,7 +1822,7 @@ local function run_gui_loop()
     
     only_selected = (only_selected == true)
 
-    workers = tonumber(sanitize_thread_input(inputs[1].val)) or 5
+    workers = tonumber(sanitize_thread_input(inputs[1].val)) or 1
     if workers < 1 then workers = 1
     elseif workers > 20 then workers = 20 end
     inputs[1].val = tostring(workers)

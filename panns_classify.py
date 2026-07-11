@@ -127,6 +127,11 @@ def _load_audio_32k_mono(audio_path):
     if data.ndim > 1:
         data = data.mean(axis=1)
 
+    # Peak normalization
+    max_val = np.max(np.abs(data))
+    if max_val > 0:
+        data = data / max_val
+
     target_sr = 32000
     if sr != target_sr:
         duration = len(data) / sr

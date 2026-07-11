@@ -157,8 +157,62 @@ def _process_one_local(idx, audio_path, start_sec, dur_sec, segment_seconds, qua
                 pass
 
 
+def analyze_dsp_properties(audio_path):
+    """
+    Carrega o áudio e analisa suas propriedades via DSP básico:
+    1. Concentração de energia abaixo de 100Hz usando FFT.
+    2. Proporção de decaimentos abruptos e contínuos sem sustain (sense of staccato/percussion).
+    """
+    import numpy as np
+    import soundfile as sf
+    try:
+        data, sr = sf.read(audio_path, always_2d=True)
+        # Converter para mono se necessário
+        if data.shape[1] > 1:
+            y = data.mean(axis=1)
+        else:
+            y = data.flatten()
+            
+        if len(y) == 0:
+            return {"low_freq_ratio": 0.0, "low_energy_ratio": 0.0}
+
+        # 1. Concentração de energia abaixo de 100Hz
+        # Usamos rfft para sinais reais
+        fft_vals = np.fft.rfft(y)
+        fft_freqs = np.fft.rfftfreq(len(y), d=1/sr)
+        magnitudes = np.abs(fft_vals)
+        energy = magnitudes ** 2
+        total_energy = np.sum(energy)
+        
+        low_freq_ratio = 0.0
+        if total_energy > 0:
+            low_freq_ratio = np.sum(energy[fft_freqs < 100]) / total_energy
+
+        # 2. Decaimentos abruptos (transiente rápido sem sustain)
+        # Dividimos em blocos de 50ms
+        frame_size = int(0.050 * sr)
+        low_energy_ratio = 0.0
+        if frame_size > 0 and len(y) >= frame_size:
+            num_frames = len(y) // frame_size
+            frames = y[:num_frames * frame_size].reshape((num_frames, frame_size))
+            frame_max = np.max(np.abs(frames), axis=1)
+            global_max = np.max(frame_max)
+            if global_max > 0:
+                # Fração de frames onde a amplitude máxima é menor que 10% do pico absoluto
+                low_energy_ratio = np.sum(frame_max < (0.1 * global_max)) / num_frames
+                
+        return {
+            "low_freq_ratio": float(low_freq_ratio),
+            "low_energy_ratio": float(low_energy_ratio)
+        }
+    except Exception as e:
+        print(f"[DSP ERROR] Falha ao analisar propriedades DSP: {e}")
+        return {"low_freq_ratio": 0.0, "low_energy_ratio": 0.0}
+
+
 def _process_one_hybrid(client, idx, audio_path, start_sec, dur_sec, shared_models, segment_seconds, quality, api_available, output_language, backend_name):
     """Processa UMA track usando um algoritmo de analise hibrida que combina PANNs local e Gemini em nuvem."""
+    import numpy as np
     tmp_seg_path = None
     tmp_light_path = None
     tmp_mp3_path = None
@@ -169,7 +223,7 @@ def _process_one_hybrid(client, idx, audio_path, start_sec, dur_sec, shared_mode
         search_start = start_sec if start_sec is not None and start_sec >= 0 else None
         search_dur = dur_sec if dur_sec is not None and dur_sec > 0 else None
 
-        # 1. Extracao do segmento de audio
+        # 1. Extração do segmento de áudio de maior energia
         tmp_seg_fd, tmp_seg_path = tempfile.mkstemp(suffix=".wav", prefix="ai_namer_seg_")
         os.close(tmp_seg_fd)
         
@@ -179,115 +233,198 @@ def _process_one_hybrid(client, idx, audio_path, start_sec, dur_sec, shared_mode
             search_duration_seconds=search_dur,
         )
 
-        # 2. Executar PANNs local
-        panns_result = classify_with_panns(tmp_seg_path, output_language=output_language)
-        panns_ok = panns_result and "error" not in panns_result
-        
-        # Helper para chamar Gemini sob demanda
-        def call_gemini(custom_prompt=None):
-            nonlocal tmp_light_path, tmp_mp3_path
-            if not api_available or not client:
-                return {"error": "API do Gemini nao disponivel para resgate"}
+        # 2. Analisar propriedades de DSP simples (Verificador de Sanidade)
+        dsp_info = analyze_dsp_properties(tmp_seg_path)
+        low_freq_ratio = dsp_info["low_freq_ratio"]
+        low_energy_ratio = dsp_info["low_energy_ratio"]
+
+        # 3. Preparar áudio bytes para o Gemini
+        if not api_available or not client:
+            # Sem API do Gemini disponível, roda apenas o local PANNs
+            panns_result = classify_with_panns(tmp_seg_path, output_language=output_language)
+            if panns_result and "error" not in panns_result:
+                panns_result["_model_usado"] = "panns_only_no_api"
+                return idx, panns_result
+            return idx, {"error": "API do Gemini nao disponivel e PANNs falhou"}
+
+        # Preparar áudio para a API do Gemini
+        if quality == "alta":
+            with open(tmp_seg_path, "rb") as f:
+                audio_bytes = f.read()
+            mime_type = "audio/wav"
+        else:
+            tmp_mp3_fd, tmp_mp3_path = tempfile.mkstemp(suffix=".mp3", prefix="ai_namer_mp3_")
+            os.close(tmp_mp3_fd)
+            mp3_success = convert_to_mp3_128k(tmp_seg_path, tmp_mp3_path)
             
-            # Preparar audio bytes para o Gemini
-            if quality == "alta":
-                with open(tmp_seg_path, "rb") as f:
+            if mp3_success:
+                with open(tmp_mp3_path, "rb") as f:
+                    audio_bytes = f.read()
+                mime_type = "audio/mp3"
+            else:
+                tmp_light_fd, tmp_light_path = tempfile.mkstemp(suffix=".wav", prefix="ai_namer_light_")
+                os.close(tmp_light_fd)
+                downmix_resample(tmp_seg_path, tmp_light_path)
+                with open(tmp_light_path, "rb") as f:
                     audio_bytes = f.read()
                 mime_type = "audio/wav"
-            else:
-                tmp_mp3_fd, tmp_mp3_path = tempfile.mkstemp(suffix=".mp3", prefix="ai_namer_mp3_")
-                os.close(tmp_mp3_fd)
-                mp3_success = convert_to_mp3_128k(tmp_seg_path, tmp_mp3_path)
-                
-                if mp3_success:
-                    with open(tmp_mp3_path, "rb") as f:
-                        audio_bytes = f.read()
-                    mime_type = "audio/mp3"
-                else:
-                    tmp_light_fd, tmp_light_path = tempfile.mkstemp(suffix=".wav", prefix="ai_namer_light_")
-                    os.close(tmp_light_fd)
-                    downmix_resample(tmp_seg_path, tmp_light_path)
-                    with open(tmp_light_path, "rb") as f:
-                        audio_bytes = f.read()
-                    mime_type = "audio/wav"
 
-            current_models = shared_models.get_models()
-            def on_model_failed(model_name):
-                shared_models.remove_model(model_name)
+        current_models = shared_models.get_models()
+        def on_model_failed(model_name):
+            shared_models.remove_model(model_name)
 
-            return classify_audio_bytes(
+        # 4. Camada de Execução Paralela
+        # Rodar CNN14 (PANNs) e Gemini Flash ao mesmo tempo
+        panns_result = None
+        gemini_result = None
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_panns = executor.submit(classify_with_panns, tmp_seg_path, output_language=output_language)
+            future_gemini = executor.submit(
+                classify_audio_bytes,
                 client, audio_bytes, mime_type=mime_type,
                 models=current_models, on_model_failed=on_model_failed,
-                output_language=output_language, custom_prompt=custom_prompt
+                output_language=output_language
             )
-
-        # 3. Decidir fluxo baseado no backend hibrido
-        if backend_name == "hybrid_heuristic":
-            # PANNs e otimo para cordas, sopro, bateria
-            if panns_ok and panns_result.get("category") in ("cordas", "sopro", "bateria"):
-                panns_result["_model_usado"] = "panns_hybrid_heuristic"
-                return idx, panns_result
             
-            # Para outros (synth, outro, vocal, baixo, teclado, guitarra ou erro), aciona o Gemini
-            gemini_result = call_gemini()
-            if "error" not in gemini_result:
-                gemini_result["_model_usado"] = f"gemini_{gemini_result.get('_model_usado', 'hybrid')}_heuristic"
-                return idx, gemini_result
-            else:
-                if panns_ok:
-                    panns_result["_model_usado"] = "panns_fallback_heuristic"
-                    return idx, panns_result
-                return idx, gemini_result
+            # Aguarda ambos concluírem
+            try:
+                panns_result = future_panns.result()
+            except Exception as e_panns:
+                panns_result = {"error": str(e_panns)}
+                
+            try:
+                gemini_result = future_gemini.result()
+            except Exception as e_gem:
+                gemini_result = {"error": str(e_gem)}
 
-        elif backend_name == "hybrid_chaining":
-            panns_instrument = panns_result.get("instrument", "desconhecido") if panns_ok else "desconhecido"
-            panns_confidence = panns_result.get("confidence", 0.0) if panns_ok else 0.0
-            
-            if output_language == "en":
-                chaining_prompt = f"""You are a mixing and sound design expert.
-I ran this audio through an old algorithmic classifier and it suggested: '{panns_instrument}' with a confidence level of {panns_confidence:.2f}.
+        panns_ok = panns_result and "error" not in panns_result
+        gemini_ok = gemini_result and "error" not in gemini_result
 
-Attention: This old classifier is unreliable with electronic sounds and often confuses synthesizers, heavy textures, and cymbals/effects (FX/ambience) with orchestral instruments or drums.
+        if not panns_ok and not gemini_ok:
+            # Ambas falharam
+            err_msg = f"CNN14 err: {panns_result.get('error') if panns_result else 'None'}; Gemini err: {gemini_result.get('error') if gemini_result else 'None'}"
+            return idx, {"error": f"Ambas as IAs falharam: {err_msg}"}
 
-Listen to the audio. If the algorithm's confidence is low, or if you notice that the texture is clearly synthetic, processed, or abstract, ignore its suggestion and use terms like 'synth lead', 'fx', 'ambience', etc. If it really sounds like an acoustic instrument played by a human, you can refine its guess.
-
-Identify the main sound source and respond ONLY with valid JSON, with no text before or after, exactly in this format:
-{{
-    "instrument": "short and specific name in English describing the timbre and role, e.g. 'distorted rhythm guitar', 'lead vocal', 'pizzicato acoustic bass', 'rhythmic chord synth', 'flute-like sampler chords'",
-    "category": "one of these exact values: vocal, guitarra, baixo, bateria, teclado, synth, sopro, cordas, outro",
-    "confidence": a number from 0.0 to 1.0 indicating your confidence in the identification,
-    "notes": "a short sentence explaining why you agreed or disagreed with the old classifier"
-}}
-"""
-            else:
-                chaining_prompt = f"""Você é um especialista em mixagem e sound design.
-Eu passei este áudio em um classificador algorítmico antigo e ele sugeriu que é: '{panns_instrument}' com nível de confiança de {panns_confidence:.2f}.
-
-Atenção: Esse classificador antigo é burro para sons eletrônicos e costuma confundir sintetizadores, texturas pesadas e efeitos (FX/ambiente) com instrumentos de orquestra ou bateria.
-
-Ouça o áudio. Se a confiança do algoritmo for baixa, ou se você notar que a textura é claramente sintética, processada ou abstrata, ignore a sugestão dele e use termos como 'synth lead', 'fx', 'ambiente', etc. Se soar realmente como um instrumento acústico tocado por um humano, você pode refinar o palpite dele.
-
-Identifique a fonte sonora principal e responda APENAS com um JSON válido, sem nenhum texto antes ou depois, exatamente neste formato:
-{{
-    "instrument": "nome curto e específico em português descrevendo o timbre e a função, ex: 'guitarra base distorcida', 'vocal principal', 'baixo acústico pizzicato', 'synth rítmico de acordes', 'flauta em acordes (sampler)'",
-    "category": "uma destas opções exatas: vocal, guitarra, baixo, bateria, teclado, synth, sopro, cordas, outro",
-    "confidence": número de 0.0 a 1.0 indicando sua confiança na identificação,
-    "notes": "uma frase curta explicando por que você concordou ou discordou do classificador antigo"
-}}
-"""
-            
-            gemini_result = call_gemini(custom_prompt=chaining_prompt)
-            if "error" not in gemini_result:
-                gemini_result["_model_usado"] = f"gemini_{gemini_result.get('_model_usado', 'hybrid')}_chaining"
-                return idx, gemini_result
-            else:
-                if panns_ok:
-                    panns_result["_model_usado"] = "panns_fallback_chaining"
-                    return idx, panns_result
-                return idx, gemini_result
-
+        # Se apenas uma IA funcionou, fallback direto para ela
+        if not panns_ok:
+            gemini_result["_model_usado"] = f"gemini_{gemini_result.get('_model_usado', 'hybrid')}_panns_failed"
+            final_res = gemini_result
+            rule_applied = "panns_failed"
+        elif not gemini_ok:
+            panns_result["_model_usado"] = "panns_gemini_failed"
+            final_res = panns_result
+            rule_applied = "gemini_failed"
         else:
-            return idx, {"error": f"backend hibrido desconhecido: {backend_name}"}
+            # 5. O Árbitro (Matriz de Decisão de Conflitos)
+            p_cat = panns_result.get("category", "").lower()
+            p_inst = panns_result.get("instrument", "").lower()
+            g_cat = gemini_result.get("category", "").lower()
+            g_inst = gemini_result.get("instrument", "").lower()
+
+            # Sanitização robusta dos valores de confiança para evitar NoneType e TypeError
+            try:
+                g_conf = gemini_result.get("confidence")
+                g_conf = float(g_conf) if g_conf is not None and g_conf != "" else 0.5
+            except (ValueError, TypeError):
+                g_conf = 0.5
+
+            try:
+                p_conf = panns_result.get("confidence")
+                p_conf = float(p_conf) if p_conf is not None and p_conf != "" else 0.5
+            except (ValueError, TypeError):
+                p_conf = 0.5
+
+            final_category = gemini_result.get("category")
+            final_instrument = gemini_result.get("instrument")
+            final_confidence = g_conf
+            notes_parts = [f"CNN14={panns_result.get('instrument')}({p_conf})", f"Gemini={gemini_result.get('instrument')}({g_conf})"]
+            rule_applied = "fallback"
+
+            # Fricativas rítmicas: se PANNs achar "vocal" e Gemini achar "shaker" ou percussão
+            shaker_keywords = ["shaker", "chocalho", "cabasa", "maraca", "percuss", "tambourine", "pandeiro", "claves", "castanholas", "caxixi"]
+            is_gemini_shaker = g_cat == "bateria" or any(kw in g_inst for kw in shaker_keywords)
+            
+            # Regra 1: Prioridade Rítmica (vocal vs shaker)
+            if p_cat == "vocal" and is_gemini_shaker:
+                final_category = "bateria"
+                final_instrument = gemini_result.get("instrument") if any(kw in g_inst for kw in ["shaker", "chocalho", "cabasa", "maraca", "pandeiro"]) else ("Shaker" if output_language == "pt" else "Shaker")
+                final_confidence = max(g_conf, p_conf)
+                rule_applied = "prioridade_ritmica"
+
+            # Regra 2: Transiente Grave (Gemini piano vs PANNs baixo/cordas)
+            elif "piano" in g_inst and (p_cat in ["baixo", "cordas"] or any(kw in p_inst for kw in ["baixo", "bass", "cello", "contrabaixo", "double bass"])):
+                final_category = "baixo"
+                final_instrument = "Baixo Pizzicato" if output_language == "pt" else "Pizzicato Bass"
+                final_confidence = p_conf
+                rule_applied = "transiente_grave"
+
+            # Regra 3: Consenso Absoluto (compatibilidade de famílias de instrumentos)
+            else:
+                compatible = False
+                if p_cat == g_cat:
+                    compatible = True
+                elif p_cat in ["cordas", "baixo"] and g_cat in ["cordas", "baixo"]:
+                    compatible = True
+                elif p_cat in ["teclado", "synth"] and g_cat in ["teclado", "synth"]:
+                    compatible = True
+                elif p_cat in ["baixo", "synth"] and g_cat in ["baixo", "synth"]:
+                    compatible = True
+                
+                if compatible:
+                    final_category = gemini_result.get("category")
+                    final_instrument = gemini_result.get("instrument")
+                    final_confidence = max(g_conf, p_conf)
+                    rule_applied = "consenso_absoluto"
+                else:
+                    # Sem consenso e sem regra especial: prioriza o que tem confiança maior ou o Gemini por padrão
+                    if p_conf > 0.75 and p_cat in ["bateria", "baixo", "sopro", "cordas"]:
+                        final_category = panns_result.get("category")
+                        final_instrument = panns_result.get("instrument")
+                        final_confidence = p_conf
+                        rule_applied = "prioridade_cnn14_confiante"
+                    else:
+                        final_category = gemini_result.get("category")
+                        final_instrument = gemini_result.get("instrument")
+                        final_confidence = g_conf
+                        rule_applied = "prioridade_gemini_default"
+
+            final_res = {
+                "category": final_category,
+                "instrument": final_instrument,
+                "confidence": round(float(final_confidence), 3),
+                "notes": f"Arbítrio: {rule_applied} | " + " | ".join(notes_parts)
+            }
+
+        # Garantia final de que a confiança é um float válido e formatado
+        try:
+            final_res["confidence"] = round(float(final_res.get("confidence", 0.5)), 3)
+        except (TypeError, ValueError):
+            final_res["confidence"] = 0.5
+
+        # 6. O Verificador de Sanidade (DSP simples)
+        orig_category = final_res.get("category")
+        orig_instrument = final_res.get("instrument")
+        notes = final_res.get("notes", "")
+
+        # Teste 1: Concentração de graves extrema (< 100Hz)
+        if low_freq_ratio > 0.45:
+            if orig_category not in ["baixo", "bateria"] or not any(kw in (orig_instrument or "").lower() for kw in ["bass", "baixo", "kick", "bumbo", "sub"]):
+                final_res["category"] = "baixo"
+                final_res["instrument"] = "Baixo/Bumbo (DSP Grave <100Hz)" if output_language == "pt" else "Bass/Kick (DSP Low-Freq <100Hz)"
+                final_res["notes"] = notes + f" | [DSP Override: Grave (F={low_freq_ratio:.2f})]"
+                print(f"  [DSP Override] Track {idx}: Grave extremo forçou categoria baixo (low_freq_ratio={low_freq_ratio:.2f})")
+
+        # Teste 2: Decaimentos abruptos e contínuos sem sustain
+        elif low_energy_ratio > 0.75:
+            if orig_category != "bateria" and not any(kw in (orig_instrument or "").lower() for kw in ["perc", "shaker", "drum", "hat", "hit"]):
+                final_res["category"] = "bateria"
+                final_res["instrument"] = "Percussão (DSP Transiente Curto)" if output_language == "pt" else "Percussion (DSP Short Transient)"
+                final_res["notes"] = notes + f" | [DSP Override: Percussivo (S={low_energy_ratio:.2f})]"
+                print(f"  [DSP Override] Track {idx}: Decaimento abrupto forçou percussão (low_energy_ratio={low_energy_ratio:.2f})")
+
+        final_res["_model_usado"] = f"hybrid_{rule_applied}"
+        return idx, final_res
 
     except Exception as e:
         return idx, {"error": f"{type(e).__name__}: {e}"}

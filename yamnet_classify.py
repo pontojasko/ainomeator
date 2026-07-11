@@ -168,6 +168,11 @@ def classify_with_yamnet(audio_path, output_language="pt"):
         if data.ndim > 1:
             data = data.mean(axis=1)
 
+        # Peak normalization
+        max_val = np.max(np.abs(data))
+        if max_val > 0:
+            data = data / max_val
+
         # Resample para 16kHz (YamNet exige 16kHz)
         if sr != 16000:
             duration = len(data) / sr
