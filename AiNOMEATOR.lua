@@ -1573,6 +1573,10 @@ local function update_analysis_summary_cached()
   return cached_jobs, cached_skipped
 end
 
+local last_hovered_text = nil
+local hover_start_time = 0
+local lock_tx, lock_ty = 0, 0
+
 local function draw_gui()
   local tooltip_to_draw = nil
   -- Fundo escuro (#1E1E1E)
@@ -1899,6 +1903,24 @@ local function draw_gui()
     gfx.y = cr_y
     gfx.drawstr(credit_text)
 
+    -- Processa o delay e lock do tooltip
+    if tooltip_to_draw then
+      if tooltip_to_draw ~= last_hovered_text then
+        last_hovered_text = tooltip_to_draw
+        hover_start_time = reaper.time_precise()
+        lock_tx = gfx.mouse_x + 15
+        lock_ty = gfx.mouse_y + 15
+      end
+      if reaper.time_precise() - hover_start_time >= 0.5 then
+        -- Mantém tooltip_to_draw ativo
+      else
+        tooltip_to_draw = nil
+      end
+    else
+      last_hovered_text = nil
+      hover_start_time = 0
+    end
+
   elseif gui_state == "analyzing" then
     -- Subtitulo
     gfx.setfont(1, "Segoe UI", 12)
@@ -1963,10 +1985,10 @@ local function draw_gui()
   if tooltip_to_draw then
     gfx.setfont(1, "Segoe UI", 10)
     local t_w, t_h = gfx.measurestr(tooltip_to_draw)
-    local tx = gfx.mouse_x + 15
-    local ty = gfx.mouse_y + 15
+    local tx = lock_tx
+    local ty = lock_ty
     if tx + t_w + 10 > gfx.w then tx = gfx.w - t_w - 10 end
-    if ty + t_h + 10 > gfx.h then ty = gfx.mouse_y - t_h - 10 end
+    if ty + t_h + 10 > gfx.h then ty = lock_ty - t_h - 30 end -- offsets slightly higher if going out of screen bottom
     gfx.r, gfx.g, gfx.b = 0.18, 0.18, 0.18
     gfx.rect(tx, ty, t_w + 10, t_h + 6, 1)
     gfx.r, gfx.g, gfx.b = 0.53, 0.0, 0.08
