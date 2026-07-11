@@ -507,7 +507,28 @@ local function list_icon_files(sep)
   return files
 end
 
-local function find_icon(icon_files, category)
+local function find_icon(icon_files, category, instrument)
+  local inst_lower = (instrument or ""):lower()
+  
+  -- 1. Busca por palavras-chave mais específicas do instrumento primeiro (ex: acústico vs elétrico)
+  local spec_kws = nil
+  if inst_lower:find("acoustic", 1, true) or inst_lower:find("violao", 1, true) or inst_lower:find("violão", 1, true) then
+    spec_kws = {"acoustic", "ac_guitar", "acguitar", "violao", "guitar"}
+  elseif inst_lower:find("electric", 1, true) or inst_lower:find("distorted", 1, true) or inst_lower:find("guitarra", 1, true) or inst_lower:find("clean", 1, true) then
+    spec_kws = {"el_guitar", "elguitar", "electric", "guitar"}
+  end
+  
+  if spec_kws then
+    for _, kw in ipairs(spec_kws) do
+      for _, f in ipairs(icon_files) do
+        if f.name:lower():find(kw, 1, true) then
+          return f.full
+        end
+      end
+    end
+  end
+
+  -- 2. Fallback para palavras-chave da categoria geral
   local keywords = ICON_KEYWORDS[category]
   if not keywords then return nil end
   for _, kw in ipairs(keywords) do
@@ -901,7 +922,7 @@ local function start_analysis()
             local col = config_colors[col_key] or config_colors["outro"]
             reaper.SetTrackColor(info.track, reaper.ColorToNative(col[1], col[2], col[3]) | 0x1000000)
 
-            local icon_path = find_icon(icon_files, category)
+            local icon_path = find_icon(icon_files, category, instrument)
             if icon_path then
               reaper.GetSetMediaTrackInfo_String(info.track, "P_ICON", icon_path, true)
             end
