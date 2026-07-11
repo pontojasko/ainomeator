@@ -1331,12 +1331,12 @@ local layout = {
   lang_pt = { x = 276, y = 12, w = 36, h = 16, radio_x = 282, radio_y = 20, radio_r = 3 },
   
   -- Checkboxes (deslocados para baixo do título)
-  only_selected = { x = 30, y = 130, w = 125, h = 20, cb_x = 30, cb_y = 135, cb_size = 18 },
-  sort_tracks = { x = 165, y = 130, w = 125, h = 20, cb_x = 165, cb_y = 135, cb_size = 18 },
+  sort_tracks = { x = 30, y = 130, w = 125, h = 20, cb_x = 30, cb_y = 135, cb_size = 18 },
+  only_selected = { x = 165, y = 130, w = 125, h = 20, cb_x = 165, cb_y = 135, cb_size = 18 },
   
   -- Rádios do modo de análise (lado a lado, deslocados)
-  mode_fast = { x = 30, y = 185, w = 125, h = 20, cb_x = 30, cb_y = 190, cb_size = 18 },
-  mode_detailed = { x = 165, y = 185, w = 125, h = 20, cb_x = 165, cb_y = 190, cb_size = 18 },
+  mode_detailed = { x = 30, y = 185, w = 125, h = 20, cb_x = 30, cb_y = 190, cb_size = 18 },
+  mode_fast = { x = 165, y = 185, w = 125, h = 20, cb_x = 165, cb_y = 190, cb_size = 18 },
   
   -- Rádios do backend de análise (deslocados)
   backend_label_y = 225,
