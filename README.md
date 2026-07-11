@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="ainomeator_logo.png" alt="AiNOMEATOR" width="240"/>
+  <img src="src/ainomeator_logo.png" alt="AiNOMEATOR" width="240"/>
 
   [![License](https://img.shields.io/github/license/pontojasko/ReaperAiNOMEATOR?style=flat-square)](LICENSE)
   [![Stars](https://img.shields.io/github/stars/pontojasko/ReaperAiNOMEATOR?style=flat-square)](https://github.com/pontojasko/ReaperAiNOMEATOR/stargazers)
