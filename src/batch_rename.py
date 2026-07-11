@@ -755,7 +755,7 @@ def main():
             results[idx] = result
             done += 1
             if "error" in result:
-                print(f"✖ trk {idx:02d} │ error     → {result['error'][:25]:<21} │")
+                print(f"✖ trk {idx:02d} │ error     → {result['error']}")
             else:
                 category = result.get('category', 'other')
                 if category == 'outro':
