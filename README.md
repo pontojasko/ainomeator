@@ -12,7 +12,6 @@
   [Getting Started](#getting-started) · [Architecture](#architecture--features) · [Report Bug](https://github.com/pontojasko/ReaperAiNOMEATOR/issues)
 
   <br />
-  <img src="screenshots/script-window.png" alt="AiNOMEATOR script window" width="320" />
   <img src="screenshots/desktop.gif" alt="AiNOMEATOR running in Reaper" width="720" />
   <br />
   <em>Demo — names, colors and icons applied automatically by AI</em>
