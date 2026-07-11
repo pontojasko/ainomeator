@@ -24,7 +24,7 @@ Automatically identifies the primary instrument of each track in Reaper using AI
 
 ---
 
-## 🚀 Quick Start: Installation
+## Quick Start: Installation
 
 ### Option A — ReaPack Installation (Recommended)
 
@@ -56,13 +56,13 @@ Automatically identifies the primary instrument of each track in Reaper using AI
 
 ---
 
-## 💡 How to Use & Best Practices
+## How to Use & Best Practices
 
 To get the most accurate and fastest results, follow these instructions:
 
 ### 1. Choose the Best Backend
 In the **Analysis Backend** setting, select the engine:
-*   ⭐ **Hybrid Heuristic (Recommended)**: This is **by far the best and most accurate mode**. It runs the local CNN14 (PANNs) model and cloud Gemini Flash-Lite in parallel. It uses PANNs to capture the physical spectral characteristics of the sound (such as low frequencies and transients) and Gemini to interpret the semantic context, joining them with a smart Arbiter and DSP checks.
+*   **Hybrid Heuristic (Recommended)**: This is **by far the best and most accurate mode**. It runs the local CNN14 (PANNs) model and cloud Gemini Flash-Lite in parallel. It uses PANNs to capture the physical spectral characteristics of the sound (such as low frequencies and transients) and Gemini to interpret the semantic context, joining them with a smart Arbiter and DSP checks.
 *   **Gemini (Cloud)**: Good for general purpose semantic descriptions, but might struggle with sub-basses or short transients.
 *   **YamNet (Local)**: Completely local Google model. Fast, but less detailed.
 *   **PANNs (Local)**: Wavelet/acoustic-based model. Excellent for standard acoustic instruments (drums, brass, strings).
@@ -87,7 +87,7 @@ In the **Analysis Backend** setting, select the engine:
 
 ---
 
-## 🛠️ Hybrid Architecture & DSP Sanity
+## Hybrid Architecture & DSP Sanity
 
 The recommended **Hybrid Heuristic** backend relies on a triple-layer logic to prevent AI hallucinations:
 
@@ -127,7 +127,7 @@ The recommended **Hybrid Heuristic** backend relies on a triple-layer logic to p
 
 ---
 
-## 📂 File Architecture
+## File Architecture
 
 ```text
 reaper-ainomeator/
@@ -146,7 +146,7 @@ reaper-ainomeator/
 
 ---
 
-## ❓ Troubleshooting & Support
+## Troubleshooting & Support
 
 *   **TypeError / NoneType in confidence**: Fixed in recent updates. Make sure you pull/sync the latest commits.
 *   **503 / 429 rate limits**: Gemini might return temporary errors under high concurrent thread counts. Keep the parallel workers setting low in Reaper (usually `1` or `2`).
