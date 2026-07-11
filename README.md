@@ -33,39 +33,21 @@ A fully structured, color-coded, and properly named Reaper session ready for mix
 ---
 
 ## Getting Started
-
-Follow these steps to get AiNOMEATOR running in your Reaper environment.
-
 ### Prerequisites
 
-- **Reaper** installed and configured.
-- **Python 3.9+** installed and added to your system PATH.
-- **Gemini API Key** from Google AI Studio.
+- **Python 3.9+**.
+- **Free Gemini API Key**.
 - *(Optional)* SWS Extension for color synchronization.
 
 ### Installation
 
-**Option A: ReaPack (Recommended)**
-1. In Reaper, go to **Extensions > ReaPack > Manage repositories**.
-2. Click **Import a repository** and paste the following URL:
-   ```text
-   https://raw.githubusercontent.com/pontojasko/ReaperAiNOMEATOR/main/index.xml
-   ```
-3. Click **OK**, then **Synchronize packages**.
-4. Search for **AiNOMEATOR** in the ReaPack browser and install it.
-
-**Option B: Manual Installation**
 1. Clone or download this repository to a local folder.
 2. Add `AiNOMEATOR.lua` to your Reaper Actions list (**Actions > Show action list > New action > Load ReaScript**).
+3. Run "setup.bat"
 
 ### Configuration
 
-You must configure your Python environment and API key before running the script.
-
-1. Open your Reaper resource directory (**Options > Show REAPER resource path**).
-2. Navigate to the `Scripts/AiNOMEATOR/` folder.
-3. Run `setup.bat`. This will create a virtual environment (`venv`) and install all required dependencies.
-4. Open the generated `.env` file and add your Gemini API key:
+You must configure your API key if you want to run gemini or hybrid analysis.
 
 ```env
 GEMINI_API_KEY=your_api_key_here
@@ -73,23 +55,19 @@ GEMINI_API_KEY=your_api_key_here
 ---
 
 ## Usage
-
-Once installed and configured, run the **AiNOMEATOR** script from your Reaper Actions list.
-
 ### Best Practices
 
-To get the most accurate and fastest results, we strongly recommend the following settings in the GUI:
+We recommend the following settings:
 
-- **Analysis Backend**: Start with **Hybrid Heuristic** as your baseline, as it is generally the most accurate mode. It runs a local CNN14 (PANNs) model and cloud Gemini in parallel. However, since the optimal backend can vary based on the specific music genre and personal preferences, you are encouraged to experiment with different backends to find what works best for your workflow.
-- **Analysis Mode**: Use **Detailed** only for best results.
-- **Sort Tracks**: Enable this to automatically group and sort your tracks by instrument family.
-- **Parallel Tracks**: Keep the thread count low (`1` or `2`) to avoid Gemini rate limits.
+- **Analysis Backend**: start with **PANNs** as your baseline. It is generally the most fast starting point. You can also test Gemini or a hybrid solution if you want to explore another/better results.
+- **Analysis Mode**: use **Detailed**.
+- **Parallel Tracks**: with Gemini, keep the thread count `1` to avoid rate limits .
 
 ---
 
 ## Architecture & Features
 
-The recommended **Hybrid Heuristic** backend relies on a triple-layer logic to prevent AI hallucinations and misclassifications:
+The **Hybrid** backend relies on a triple-layer logic to prevent AI hallucinations and misclassifications:
 
 ```mermaid
 graph TD
@@ -129,19 +107,6 @@ Audio is locally converted to mono, peak-normalized, reduced to a higher-energy 
 
 Edit `colors.ini` manually (format `key = #HEX`) or use the color prompt field in the GUI to generate a palette via AI. The AI-generated file is saved as `colors_prompt.ini`.
 If you use the **SWS Extension**, run `AiNOMEATOR_sws_sync.lua` in Reaper (or `sync_sws_colors.bat` outside) to instantly copy the AiNOMEATOR palette to Reaper's native `sws-autocoloricon.ini`.
-
-### File Architecture
-
-```text
-reaper-ainomeator/
-├── AiNOMEATOR.lua              # Reaper GUI + result application
-├── AiNOMEATOR_sws_sync.lua     # ReaScript shortcut for SWS color sync
-├── setup.bat                   # Creates virtual env and .env file
-├── sync_sws_colors.bat         # CLI shortcut for SWS color sync
-├── colors.ini                  # Default color palette
-├── src/                        # Processing backend in Python
-└── tests/                      # Automated test scripts
-```
 
 ---
 
