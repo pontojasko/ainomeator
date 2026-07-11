@@ -99,6 +99,7 @@ local strings = {
     msg_api_error = "[ERROR] batch_rename.py did not generate the result file.",
     msg_api_causes = "Possible causes:\n  - setup.bat has not been run in this folder\n  - GEMINI_API_KEY is not configured in .env\n  - Python was not found in PATH",
     msg_api_causes_mb = "Failed to run AI. Possible causes:\n- setup.bat has not been run in this folder (venv/.env missing)\n- GEMINI_API_KEY not configured in .env\n- Python not found\n\nSee the Reaper console for details.",
+    general_label = "General Options:",
     backend_label = "Analysis Backend:",
     backend_gemini = "Gemini (maybe better for synths)",
     backend_yamnet = "YamNet (local, no API key)",
@@ -179,6 +180,7 @@ local strings = {
     msg_api_error = "[ERRO] batch_rename.py nao gerou o arquivo de resultado.",
     msg_api_causes = "Possiveis causas:\n  - setup.bat ainda nao foi rodado nesta pasta (venv/.env faltando)\n  - GEMINI_API_KEY nao configurada no .env\n  - Python nao encontrado no PATH",
     msg_api_causes_mb = "Falha ao rodar a IA. Possiveis causas:\n- setup.bat ainda nao foi rodado nesta pasta (venv/.env faltando)\n- GEMINI_API_KEY nao configurada no .env\n- Python nao encontrado\n\nVeja o console do Reaper para detalhes completos.",
+    general_label = "Opções Gerais:",
     backend_label = "Backend de Analise:",
     backend_gemini = "Gemini (talvez melhor para synths)",
     backend_yamnet = "YamNet (local, sem chave de API)",
@@ -1328,28 +1330,28 @@ local layout = {
   lang_en = { x = 241, y = 12, w = 32, h = 16, radio_x = 246, radio_y = 20, radio_r = 3 },
   lang_pt = { x = 276, y = 12, w = 36, h = 16, radio_x = 282, radio_y = 20, radio_r = 3 },
   
-  -- Checkboxes
-  only_selected = { x = 30, y = 110, w = 125, h = 20, cb_x = 30, cb_y = 115, cb_size = 18 },
-  sort_tracks = { x = 165, y = 110, w = 125, h = 20, cb_x = 165, cb_y = 115, cb_size = 18 },
+  -- Checkboxes (deslocados para baixo do título)
+  only_selected = { x = 30, y = 130, w = 125, h = 20, cb_x = 30, cb_y = 135, cb_size = 18 },
+  sort_tracks = { x = 165, y = 130, w = 125, h = 20, cb_x = 165, cb_y = 135, cb_size = 18 },
   
-  -- Rádios do modo de análise (lado a lado)
-  mode_fast = { x = 30, y = 165, w = 125, h = 20, cb_x = 30, cb_y = 170, cb_size = 18 },
-  mode_detailed = { x = 165, y = 165, w = 125, h = 20, cb_x = 165, cb_y = 170, cb_size = 18 },
+  -- Rádios do modo de análise (lado a lado, deslocados)
+  mode_fast = { x = 30, y = 185, w = 125, h = 20, cb_x = 30, cb_y = 190, cb_size = 18 },
+  mode_detailed = { x = 165, y = 185, w = 125, h = 20, cb_x = 165, cb_y = 190, cb_size = 18 },
   
-  -- Rádios do backend de análise (deslocados para cima)
-  backend_label_y = 205,
-  backend_start_y = 227,
+  -- Rádios do backend de análise (deslocados)
+  backend_label_y = 225,
+  backend_start_y = 247,
   backend_spacing_y = 25,
   backend_cb_x = 30,
   backend_cb_size = 18,
   
   -- Theme Selector (deslocado)
-  theme_selector = { x = 30, y = 440, w = 260, h = 30 },
+  theme_selector = { x = 30, y = 460, w = 260, h = 30 },
   
   -- Outros Botões (deslocados)
   copy_logs = { x = 190, y = 105, w = 100, h = 24 },
-  analyze = { x = 30, y = 555, w = 260, h = 36 },
-  close = { x = 30, y = 625, w = 260, h = 36 }
+  analyze = { x = 30, y = 575, w = 260, h = 36 },
+  close = { x = 30, y = 645, w = 260, h = 36 }
 }
 
 local backend_options = {
@@ -1399,9 +1401,9 @@ only_selected = false
 sort_tracks = (saved_sort_tracks == "true")
 analysis_mode = "detailed"
 inputs = {
-  { label = t("thread_label"), val = "1", placeholder = "1-20", is_numeric = true, limit = 2, x = 30, y = 365, w = 110, h = 30 },
-  { label = t("prompt_label"), val = "", placeholder = t("prompt_placeholder"), is_numeric = false, limit = 100, x = 30, y = 505, w = 260, h = 30 },
-  { label = t("local_thread_label"), val = saved_panns_threads, placeholder = "1-16", is_numeric = true, limit = 2, x = 180, y = 365, w = 110, h = 30 }
+  { label = t("thread_label"), val = "1", placeholder = "1-20", is_numeric = true, limit = 2, x = 30, y = 385, w = 110, h = 30 },
+  { label = t("prompt_label"), val = "", placeholder = t("prompt_placeholder"), is_numeric = false, limit = 100, x = 30, y = 525, w = 260, h = 30 },
+  { label = t("local_thread_label"), val = saved_panns_threads, placeholder = "1-16", is_numeric = true, limit = 2, x = 180, y = 385, w = 110, h = 30 }
 }
 
 local function refresh_language_labels()
@@ -1625,6 +1627,13 @@ local function draw_gui()
       gfx.circle(pt.radio_x, pt.radio_y, pt.radio_r - 2, 1, 1)
     end
 
+    -- Opções Gerais Label
+    gfx.setfont(1, "Segoe UI", 11, 98) -- Bold
+    gfx.r, gfx.g, gfx.b = 0.65, 0.65, 0.65
+    gfx.x, gfx.y = 30, 110
+    gfx.drawstr(t("general_label"))
+    gfx.setfont(1, "Segoe UI", 11)
+
     -- Checkbox "Apenas faixas selecionadas"
     local opt = layout.only_selected
     if in_rect(opt.x, opt.y, opt.w, opt.h) then tooltip_to_draw = t("tip_only_selected") end
@@ -1661,12 +1670,12 @@ local function draw_gui()
     
     -- Linha divisória
     gfx.r, gfx.g, gfx.b = 0.2, 0.2, 0.2
-    gfx.line(30, 142, 290, 142)
+    gfx.line(30, 160, 290, 160)
 
     -- Modo de Análise Label
     gfx.setfont(1, "Segoe UI", 11, 98) -- Bold
     gfx.r, gfx.g, gfx.b = 0.65, 0.65, 0.65
-    gfx.x, gfx.y = 30, 150
+    gfx.x, gfx.y = 30, 170
     gfx.drawstr(t("analysis_mode"))
     gfx.setfont(1, "Segoe UI", 11)
 
@@ -2207,8 +2216,8 @@ local function run_gui_loop()
   end
 
   -- Travar o resize
-  if gfx.w ~= 320 or gfx.h ~= 675 then
-    gfx.init("AiNOMEATOR", 320, 675, 0, gfx.x, gfx.y)
+  if gfx.w ~= 320 or gfx.h ~= 695 then
+    gfx.init("AiNOMEATOR", 320, 695, 0, gfx.x, gfx.y)
   end
 
   draw_gui()
@@ -2243,7 +2252,7 @@ local function run_gui_loop()
 end
 
 -- Inicializa a tela grafica customizada centralizada na tela
-local win_w, win_h = 320, 675
+local win_w, win_h = 320, 695
 local win_x, win_y = 150, 150 -- Fallback padrão se my_getViewport não estiver disponível
 
 if reaper.my_getViewport then
