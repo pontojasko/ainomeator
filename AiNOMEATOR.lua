@@ -535,6 +535,9 @@ local function sort_project_tracks(track_categories, track_instruments)
     local _, tr_name = reaper.GetTrackName(tr)
     tr_name = tr_name or ""
 
+    local inst_lower = instrument:lower()
+    local name_lower = tr_name:lower()
+
     -- Check if it is a folder or utility track to adjust categories
     local is_folder = reaper.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH") == 1
     if is_folder then
@@ -544,6 +547,11 @@ local function sort_project_tracks(track_categories, track_instruments)
       local key_by_name = get_color_key("", "", tr_name)
       if key_by_name == "efeitos" then
         category = "efeitos"
+      -- Se contiver palavras-chave de guitarra no nome do instrumento ou da track (e não for baixo), força categoria guitarra para agrupá-las no topo
+      elseif (inst_lower:find("guitar", 1, true) or inst_lower:find("violao", 1, true) or inst_lower:find("violão", 1, true) or inst_lower:find("guitarra", 1, true) or
+              name_lower:find("guitar", 1, true) or name_lower:find("violao", 1, true) or name_lower:find("violão", 1, true) or name_lower:find("guitarra", 1, true)) and
+             not (inst_lower:find("bass", 1, true) or inst_lower:find("baixo", 1, true) or name_lower:find("bass", 1, true) or name_lower:find("baixo", 1, true)) then
+        category = "guitarra"
       end
     end
 
