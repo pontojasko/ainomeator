@@ -1346,12 +1346,12 @@ local layout = {
   backend_cb_size = 18,
   
   -- Theme Selector (deslocado)
-  theme_selector = { x = 30, y = 475, w = 260, h = 30 },
+  theme_selector = { x = 30, y = 455, w = 260, h = 30 },
   
   -- Outros Botões (deslocados)
   copy_logs = { x = 190, y = 105, w = 100, h = 24 },
-  analyze = { x = 30, y = 590, w = 260, h = 36 },
-  close = { x = 30, y = 660, w = 260, h = 36 }
+  analyze = { x = 30, y = 600, w = 260, h = 36 },
+  close = { x = 30, y = 675, w = 260, h = 36 }
 }
 
 local backend_options = {
@@ -1401,9 +1401,9 @@ only_selected = false
 sort_tracks = (saved_sort_tracks == "true")
 analysis_mode = "detailed"
 inputs = {
-  { label = t("thread_label"), val = "1", placeholder = "1-20", is_numeric = true, limit = 2, x = 30, y = 400, w = 110, h = 30 },
-  { label = t("prompt_label"), val = "", placeholder = t("prompt_placeholder"), is_numeric = false, limit = 100, x = 30, y = 540, w = 260, h = 30 },
-  { label = t("local_thread_label"), val = saved_panns_threads, placeholder = "1-16", is_numeric = true, limit = 2, x = 180, y = 400, w = 110, h = 30 }
+  { label = t("thread_label"), val = "1", placeholder = "1-20", is_numeric = true, limit = 2, x = 30, y = 390, w = 110, h = 30 },
+  { label = t("prompt_label"), val = "", placeholder = t("prompt_placeholder"), is_numeric = false, limit = 100, x = 30, y = 525, w = 260, h = 30 },
+  { label = t("local_thread_label"), val = saved_panns_threads, placeholder = "1-16", is_numeric = true, limit = 2, x = 180, y = 390, w = 110, h = 30 }
 }
 
 local function refresh_language_labels()
@@ -1776,7 +1776,7 @@ local function draw_gui()
 
     -- Linha divisória após o Theme
     gfx.r, gfx.g, gfx.b = 0.2, 0.2, 0.2
-    gfx.line(30, 505, 290, 505)
+    gfx.line(30, 500, 290, 500)
 
     -- Campos de Texto
     for i, inp in ipairs(inputs) do
@@ -1861,11 +1861,11 @@ local function draw_gui()
     gfx.setfont(1, "Segoe UI", 11)
     if n_jobs == 0 then
       gfx.r, gfx.g, gfx.b = 0.8, 0.6, 0.2 -- Amarelo/Dourado suave
-      gfx.x, gfx.y = 30, 552
+      gfx.x, gfx.y = 30, 565
       gfx.drawstr(t("msg_no_audio"))
     else
       gfx.r, gfx.g, gfx.b = 0.65, 0.65, 0.65 -- Cinza suave
-      gfx.x, gfx.y = 30, 564
+      gfx.x, gfx.y = 30, 577
       local msg = string.format(t("msg_summary"), n_jobs, n_skipped)
       gfx.drawstr(msg)
     end
@@ -1895,10 +1895,10 @@ local function draw_gui()
     local note1_w = gfx.measurestr(note1)
     local note2_w = gfx.measurestr(note2)
     gfx.x = (gfx.w - note1_w) / 2
-    gfx.y = 625
+    gfx.y = 650
     gfx.drawstr(note1)
     gfx.x = (gfx.w - note2_w) / 2
-    gfx.y = 636
+    gfx.y = 661
     gfx.drawstr(note2)
 
     -- Creditos visiveis
@@ -1906,7 +1906,7 @@ local function draw_gui()
     local credit_text = "by jasko"
     local cr_w, cr_h = gfx.measurestr(credit_text)
     local cr_x = (gfx.w - cr_w) / 2
-    local cr_y = 666
+    local cr_y = 686
     gfx.r, gfx.g, gfx.b = 1.0, 1.0, 1.0
     gfx.x = cr_x
     gfx.y = cr_y
@@ -2216,8 +2216,8 @@ local function run_gui_loop()
   end
 
   -- Travar o resize
-  if gfx.w ~= 320 or gfx.h ~= 695 then
-    gfx.init("AiNOMEATOR", 320, 695, 0, gfx.x, gfx.y)
+  if gfx.w ~= 320 or gfx.h ~= 725 then
+    gfx.init("AiNOMEATOR", 320, 725, 0, gfx.x, gfx.y)
   end
 
   draw_gui()
@@ -2252,7 +2252,7 @@ local function run_gui_loop()
 end
 
 -- Inicializa a tela grafica customizada centralizada na tela
-local win_w, win_h = 320, 695
+local win_w, win_h = 320, 725
 local win_x, win_y = 150, 150 -- Fallback padrão se my_getViewport não estiver disponível
 
 if reaper.my_getViewport then
