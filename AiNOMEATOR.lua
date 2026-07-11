@@ -1322,8 +1322,8 @@ local layout = {
 
 local backend_options = {
   { key = "panns",              label_key = "backend_panns" },
-  { key = "gemini",             label_key = "backend_gemini" },
   { key = "hybrid_chaining",    label_key = "backend_hybrid_chaining" },
+  { key = "gemini",             label_key = "backend_gemini" },
   { key = "hybrid_heuristic",   label_key = "backend_hybrid_heuristic" },
 }
 
