@@ -58,8 +58,8 @@ local strings = {
     only_selected = "Only selected",
     sort_tracks = "Sort tracks",
     analysis_mode = "Analysis Mode:",
-    mode_fast = "Fast (uses short 8-12s audio segments)",
-    mode_detailed = "Detailed (analyzes full WAV / entire item duration)",
+    mode_fast = "Fast",
+    mode_detailed = "Detailed",
     thread_label = "Parallel tracks (1-20):",
     local_thread_label = "Local threads (1-16):",
     prompt_label = "Color prompt (empty = use colors.ini):",
@@ -100,11 +100,11 @@ local strings = {
     msg_api_causes = "Possible causes:\n  - setup.bat has not been run in this folder\n  - GEMINI_API_KEY is not configured in .env\n  - Python was not found in PATH",
     msg_api_causes_mb = "Failed to run AI. Possible causes:\n- setup.bat has not been run in this folder (venv/.env missing)\n- GEMINI_API_KEY not configured in .env\n- Python not found\n\nSee the Reaper console for details.",
     backend_label = "Analysis Backend:",
-    backend_gemini = "Gemini (cloud - Less recommended, better for synths)",
+    backend_gemini = "Gemini (maybe better for synths)",
     backend_yamnet = "YamNet (local, no API key)",
     backend_essentia = "Essentia (local, no API key)",
-    backend_panns = "PANNs (local - Recommended)",
-    backend_hybrid_heuristic = "Hybrid Heuristic (Gemini-oriented - Less recommended)",
+    backend_panns = "PANNs (Recommended)",
+    backend_hybrid_heuristic = "Hybrid Heuristic",
     backend_hybrid_chaining = "Hybrid Chaining (PANNs-oriented - Recommended)",
     theme_label = "Color Palette / Theme:",
     theme_default = "Default (Balanced)",
@@ -121,15 +121,15 @@ local strings = {
     tip_lang_pt = "Switch interface language to Portuguese.",
     tip_only_selected = "Only analyze tracks that are currently selected in Reaper.",
     tip_sort_tracks = "Automatically sort your tracks in the Reaper project by instrument name.",
-    tip_mode_fast = "Fast: Analyzes short 8s to 12s segments of the audio to speed up processing.",
-    tip_mode_detailed = "Detailed: Analyzes the entire audio file or original source item for higher accuracy.",
-    tip_backend_panns = "PANNs: Uses your local CPU. Extremely fast, very accurate. No API key needed.",
-    tip_backend_hybrid_chaining = "Hybrid Chaining: Runs PANNs local model first, then sends result to Gemini to review and polish details.",
-    tip_backend_gemini = "Gemini: Cloud API. Good at identifying complex synth timbres, but requires an active API key.",
-    tip_backend_hybrid_heuristic = "Hybrid Heuristic: Runs PANNs and Gemini concurrently and resolves conflicts with coded heuristics.",
+    tip_mode_fast = "Analyzes short 8s to 12s segments of the audio to speed up processing.",
+    tip_mode_detailed = "Analyzes the entire audio file or original source item for higher accuracy.",
+    tip_backend_panns = "Uses your local CPU. Extremely fast, very accurate. No API key needed.",
+    tip_backend_hybrid_chaining = "Runs PANNs first, then sends result to Gemini to review and polish details.",
+    tip_backend_gemini = "Good at identifying complex synth timbres, but requires an active API key.",
+    tip_backend_hybrid_heuristic = "Runs PANNs and Gemini concurrently and resolves conflicts with coded heuristics.",
     tip_theme = "Choose a color palette theme for your tracks in Reaper.",
     tip_colors_prompt = "Custom Prompt to override the color definitions. Leave empty to use default colors.ini.",
-    tip_api_key = "Enter your Google Gemini API Key here (starts with AIzaSy). Press Save to keep it.",
+    tip_api_key = "Enter your Google Gemini API Key here. Press Save to keep it.",
     tip_threads_cpu = "Number of parallel requests for Gemini cloud API.",
     tip_local_threads = "Number of CPU threads to use for local models.",
     tip_btn_analyze = "Start the analysis and rename/recolor your tracks!",
@@ -138,8 +138,8 @@ local strings = {
     only_selected = "Apenas sel.",
     sort_tracks = "Ordenar inst.",
     analysis_mode = "Modo de Análise:",
-    mode_fast = "Rápida (analisa trechos curtos de 8-12s)",
-    mode_detailed = "Detalhada (analisa WAV original / faixa completa)",
+    mode_fast = "Rápida",
+    mode_detailed = "Detalhada",
     thread_label = "Faixas/CPU (1-20):",
     local_thread_label = "Threads locais (1-16):",
     prompt_label = "Prompt de cores (vazio = usar cores.ini):",
@@ -180,12 +180,12 @@ local strings = {
     msg_api_causes = "Possiveis causas:\n  - setup.bat ainda nao foi rodado nesta pasta (venv/.env faltando)\n  - GEMINI_API_KEY nao configurada no .env\n  - Python nao encontrado no PATH",
     msg_api_causes_mb = "Falha ao rodar a IA. Possiveis causas:\n- setup.bat ainda nao foi rodado nesta pasta (venv/.env faltando)\n- GEMINI_API_KEY nao configurada no .env\n- Python nao encontrado\n\nVeja o console do Reaper para detalhes completos.",
     backend_label = "Backend de Analise:",
-    backend_gemini = "Gemini (nuvem - Menos recomendado, melhor para synths)",
+    backend_gemini = "Gemini (talvez melhor para synths)",
     backend_yamnet = "YamNet (local, sem chave de API)",
     backend_essentia = "Essentia (local, sem chave de API)",
-    backend_panns = "PANNs (local - Recomendado)",
-    backend_hybrid_heuristic = "Híbrido Heurística (foco Gemini - Menos recomendado)",
-    backend_hybrid_chaining = "Híbrido Encadeado (foco PANNs - Recomendado)",
+    backend_panns = "PANNs (Recomendado)",
+    backend_hybrid_heuristic = "Híbrido Heurística",
+    backend_hybrid_chaining = "Híbrido Encadeado (Recomendado)",
     theme_label = "Paleta de Cores / Tema:",
     theme_default = "Padrão (Equilibrado)",
     theme_green = "Verde Floresta",
@@ -200,15 +200,15 @@ local strings = {
     tip_lang_en = "Mudar o idioma da interface para Inglês.",
     tip_lang_pt = "Mudar o idioma da interface para Português.",
     tip_only_selected = "Analisa apenas as faixas que estiverem selecionadas no momento no Reaper.",
-    tip_sort_tracks = "Ordena as faixas no projeto do Reaper em ordem alfabética por nome de instrumento após a análise.",
-    tip_mode_fast = "Rápido: Analisa trechos curtos de 8s a 12s do áudio para agilizar o processamento.",
-    tip_mode_detailed = "Detalhado: Analisa o arquivo inteiro ou item original completo para maior precisão.",
-    tip_backend_panns = "PANNs: Executado localmente na CPU. Rápido e preciso. Não precisa de chave API.",
-    tip_backend_hybrid_chaining = "Híbrido Encadeado: Roda o PANNs local primeiro e passa a previsão para o Gemini revisar e enriquecer os detalhes.",
-    tip_backend_gemini = "Gemini: API na nuvem. Bom para timbres complexos e synths, mas exige chave API configurada.",
-    tip_backend_hybrid_heuristic = "Híbrido Heurística: Roda PANNs e Gemini em paralelo e resolve conflitos usando regras heurísticas fixas.",
+    tip_sort_tracks = "Ordena as faixas no projeto do Reaper.",
+    tip_mode_fast = "Analisa trechos curtos de 8s a 12s do áudio para agilizar o processamento.",
+    tip_mode_detailed = "Analisa o arquivo inteiro ou item original completo para maior precisão.",
+    tip_backend_panns = "Executado localmente na CPU. Rápido e preciso. Não precisa de chave API.",
+    tip_backend_hybrid_chaining = "Roda o PANNs local primeiro e passa a previsão para o Gemini revisar e enriquecer os detalhes.",
+    tip_backend_gemini = "Bom para timbres complexos e synths, mas exige chave API configurada.",
+    tip_backend_hybrid_heuristic = "Roda PANNs e Gemini em paralelo e resolve conflitos usando regras heurísticas fixas.",
     tip_theme = "Escolha a paleta de cores ou tema que será aplicada às faixas no Reaper.",
-    tip_colors_prompt = "Prompt customizado de IA para redefinir as cores das tracks. Deixe em branco para usar as cores padrão.",
+    tip_colors_prompt = "Prompt customizado de IA para redefinir as cores das tracks.",
     tip_api_key = "Insira sua Chave de API do Gemini aqui (começa com AIzaSy). Clique em Salvar para mantê-la no sistema.",
     tip_threads_cpu = "Número de requisições simultâneas para a API do Gemini.",
     tip_local_threads = "Número de threads de CPU para os modelos locais.",
@@ -1332,24 +1332,24 @@ local layout = {
   only_selected = { x = 30, y = 110, w = 125, h = 20, cb_x = 30, cb_y = 115, cb_size = 18 },
   sort_tracks = { x = 165, y = 110, w = 125, h = 20, cb_x = 165, cb_y = 115, cb_size = 18 },
   
-  -- Rádios do modo de análise
-  mode_fast = { x = 30, y = 165, w = 260, h = 20, cb_x = 30, cb_y = 170, cb_size = 18 },
-  mode_detailed = { x = 30, y = 190, w = 260, h = 20, cb_x = 30, cb_y = 195, cb_size = 18 },
+  -- Rádios do modo de análise (lado a lado)
+  mode_fast = { x = 30, y = 165, w = 125, h = 20, cb_x = 30, cb_y = 170, cb_size = 18 },
+  mode_detailed = { x = 165, y = 165, w = 125, h = 20, cb_x = 165, cb_y = 170, cb_size = 18 },
   
-  -- Rádios do backend de análise
-  backend_label_y = 230,
-  backend_start_y = 252,
+  -- Rádios do backend de análise (deslocados para cima)
+  backend_label_y = 205,
+  backend_start_y = 227,
   backend_spacing_y = 25,
   backend_cb_x = 30,
   backend_cb_size = 18,
   
-  -- Theme Selector (novo widget)
-  theme_selector = { x = 30, y = 465, w = 260, h = 30 },
+  -- Theme Selector (deslocado)
+  theme_selector = { x = 30, y = 440, w = 260, h = 30 },
   
   -- Outros Botões (deslocados)
   copy_logs = { x = 190, y = 105, w = 100, h = 24 },
-  analyze = { x = 30, y = 580, w = 260, h = 36 },
-  close = { x = 30, y = 650, w = 260, h = 36 }
+  analyze = { x = 30, y = 555, w = 260, h = 36 },
+  close = { x = 30, y = 625, w = 260, h = 36 }
 }
 
 local backend_options = {
@@ -1399,9 +1399,9 @@ only_selected = false
 sort_tracks = (saved_sort_tracks == "true")
 analysis_mode = "detailed"
 inputs = {
-  { label = t("thread_label"), val = "1", placeholder = "1-20", is_numeric = true, limit = 2, x = 30, y = 390, w = 110, h = 30 },
-  { label = t("prompt_label"), val = "", placeholder = t("prompt_placeholder"), is_numeric = false, limit = 100, x = 30, y = 530, w = 260, h = 30 },
-  { label = t("local_thread_label"), val = saved_panns_threads, placeholder = "1-16", is_numeric = true, limit = 2, x = 180, y = 390, w = 110, h = 30 }
+  { label = t("thread_label"), val = "1", placeholder = "1-20", is_numeric = true, limit = 2, x = 30, y = 365, w = 110, h = 30 },
+  { label = t("prompt_label"), val = "", placeholder = t("prompt_placeholder"), is_numeric = false, limit = 100, x = 30, y = 505, w = 260, h = 30 },
+  { label = t("local_thread_label"), val = saved_panns_threads, placeholder = "1-16", is_numeric = true, limit = 2, x = 180, y = 365, w = 110, h = 30 }
 }
 
 local function refresh_language_labels()
@@ -1702,7 +1702,7 @@ local function draw_gui()
 
     -- Linha divisória
     gfx.r, gfx.g, gfx.b = 0.2, 0.2, 0.2
-    gfx.line(30, 222, 290, 222)
+    gfx.line(30, 197, 290, 197)
 
     -- Backend de Análise Label
     gfx.setfont(1, "Segoe UI", 11, 98) -- Bold
@@ -1732,10 +1732,10 @@ local function draw_gui()
 
     -- Linha divisória
     gfx.r, gfx.g, gfx.b = 0.2, 0.2, 0.2
-    gfx.line(30, 355, 290, 355)
+    gfx.line(30, 330, 290, 330)
 
     -- Linha divisória após as threads
-    gfx.line(30, 435, 290, 435)
+    gfx.line(30, 410, 290, 410)
 
     -- Theme Selector Label
     gfx.setfont(1, "Segoe UI", 10)
@@ -1767,7 +1767,7 @@ local function draw_gui()
 
     -- Linha divisória após o Theme
     gfx.r, gfx.g, gfx.b = 0.2, 0.2, 0.2
-    gfx.line(30, 505, 290, 505)
+    gfx.line(30, 480, 290, 480)
 
     -- Campos de Texto
     for i, inp in ipairs(inputs) do
@@ -1852,11 +1852,11 @@ local function draw_gui()
     gfx.setfont(1, "Segoe UI", 11)
     if n_jobs == 0 then
       gfx.r, gfx.g, gfx.b = 0.8, 0.6, 0.2 -- Amarelo/Dourado suave
-      gfx.x, gfx.y = 30, 552
+      gfx.x, gfx.y = 30, 527
       gfx.drawstr(t("msg_no_audio"))
     else
       gfx.r, gfx.g, gfx.b = 0.65, 0.65, 0.65 -- Cinza suave
-      gfx.x, gfx.y = 30, 564
+      gfx.x, gfx.y = 30, 539
       local msg = string.format(t("msg_summary"), n_jobs, n_skipped)
       gfx.drawstr(msg)
     end
@@ -1886,10 +1886,10 @@ local function draw_gui()
     local note1_w = gfx.measurestr(note1)
     local note2_w = gfx.measurestr(note2)
     gfx.x = (gfx.w - note1_w) / 2
-    gfx.y = 625
+    gfx.y = 600
     gfx.drawstr(note1)
     gfx.x = (gfx.w - note2_w) / 2
-    gfx.y = 636
+    gfx.y = 611
     gfx.drawstr(note2)
 
     -- Creditos visiveis
@@ -1897,7 +1897,7 @@ local function draw_gui()
     local credit_text = "by jasko"
     local cr_w, cr_h = gfx.measurestr(credit_text)
     local cr_x = (gfx.w - cr_w) / 2
-    local cr_y = 666
+    local cr_y = 641
     gfx.r, gfx.g, gfx.b = 1.0, 1.0, 1.0
     gfx.x = cr_x
     gfx.y = cr_y
@@ -2207,8 +2207,8 @@ local function run_gui_loop()
   end
 
   -- Travar o resize
-  if gfx.w ~= 320 or gfx.h ~= 700 then
-    gfx.init("AiNOMEATOR", 320, 700, 0, gfx.x, gfx.y)
+  if gfx.w ~= 320 or gfx.h ~= 675 then
+    gfx.init("AiNOMEATOR", 320, 675, 0, gfx.x, gfx.y)
   end
 
   draw_gui()
@@ -2243,7 +2243,7 @@ local function run_gui_loop()
 end
 
 -- Inicializa a tela grafica customizada centralizada na tela
-local win_w, win_h = 320, 700
+local win_w, win_h = 320, 675
 local win_x, win_y = 150, 150 -- Fallback padrão se my_getViewport não estiver disponível
 
 if reaper.my_getViewport then
