@@ -27,6 +27,16 @@ Como instalar no Reaper:
 
 local gui_state = "config"
 
+local _, script_path = reaper.get_action_context()
+local script_dir = script_path:match("^(.*[/\\])")
+
+local os_name = reaper.GetOS()
+local is_windows = os_name:find("Win") ~= nil
+local sep = is_windows and "\\" or "/"
+
+local env_path = script_dir .. ".env"
+local config_path = script_dir .. "reaper_ai_track_namer_colors.ini"
+
 local lang = reaper.GetExtState("AiNOMEATOR", "language")
 if lang == "" then lang = "en" end -- default to English
 
@@ -38,6 +48,9 @@ if backend == "" then backend = "gemini" end
 
 local saved_sort_tracks = reaper.GetExtState("AiNOMEATOR", "sort_tracks")
 if saved_sort_tracks == "" then saved_sort_tracks = "false" end
+
+local current_theme = reaper.GetExtState("AiNOMEATOR", "theme")
+if current_theme == "" then current_theme = "default" end
 
 
 local strings = {
@@ -93,6 +106,17 @@ local strings = {
     backend_panns = "PANNs (local, no API key)",
     backend_hybrid_heuristic = "Hybrid Heuristic (PANNs + Gemini)",
     backend_hybrid_chaining = "Hybrid Chaining (PANNs + Gemini review)",
+    theme_label = "Color Palette / Theme:",
+    theme_default = "Default (Balanced)",
+    theme_green = "Forest Green",
+    theme_purple = "Deep Purple",
+    theme_blue = "Ocean Blue",
+    theme_red = "Crimson Red",
+    theme_orange = "Sunset Orange",
+    theme_yellow = "Golden Yellow",
+    theme_vintage = "Vintage Warm",
+    theme_custom = "Custom AI Prompt (Set below)",
+    theme_prompt_disabled = "[Change theme to 'Custom AI' to edit]",
   },
   pt = {
     only_selected = "Apenas sel.",
@@ -146,6 +170,17 @@ local strings = {
     backend_panns = "PANNs (local, sem chave de API)",
     backend_hybrid_heuristic = "Híbrido Heurística (PANNs + Gemini)",
     backend_hybrid_chaining = "Híbrido Encadeado (Gemini avalia PANNs)",
+    theme_label = "Paleta de Cores / Tema:",
+    theme_default = "Padrão (Equilibrado)",
+    theme_green = "Verde Floresta",
+    theme_purple = "Roxo Profundo",
+    theme_blue = "Azul Oceano",
+    theme_red = "Vermelho Carmesim",
+    theme_orange = "Laranja Pôr do Sol",
+    theme_yellow = "Amarelo Ouro",
+    theme_vintage = "Vintage Quente",
+    theme_custom = "Custom IA Prompt (Defina abaixo)",
+    theme_prompt_disabled = "[Mude o tema para 'Custom IA' para editar]",
   }
 }
 
@@ -196,54 +231,6 @@ local function sanitize_shell_arg(s)
 end
 
 
-local function read_env_api_key(env_path)
-  local f = io.open(env_path, "r")
-  if not f then return "" end
-  local api_key = ""
-  for line in f:lines() do
-    local val = line:match("^%s*GEMINI_API_KEY%s*=%s*(.-)%s*$")
-    if val then
-      api_key = val
-      -- remove quotes if any
-      api_key = api_key:gsub('^"(.*)"$', "%1"):gsub("^'(.*)'$", "%1")
-      break
-    end
-  end
-  f:close()
-  return trim(api_key)
-end
-
-local function write_env_api_key(env_path, api_key)
-  local lines = {}
-  local found = false
-  local f = io.open(env_path, "r")
-  if f then
-    for line in f:lines() do
-      if line:find("^%s*GEMINI_API_KEY%s*=") then
-        table.insert(lines, "GEMINI_API_KEY=" .. api_key)
-        found = true
-      else
-        table.insert(lines, line)
-      end
-    end
-    f:close()
-  end
-
-  if not found then
-    table.insert(lines, "GEMINI_API_KEY=" .. api_key)
-  end
-
-  f = io.open(env_path, "w")
-  if f then
-    for _, line in ipairs(lines) do
-      f:write(line .. "\n")
-    end
-    f:close()
-    return true
-  end
-  return false
-end
-
 -- 0-based track index -> {track=MediaTrack, name=string, audio=nil ou {filename, start, dur}}
 local track_info = {}
 
@@ -259,6 +246,159 @@ local function hex_to_rgb(hex)
     return r, g, b
   end
   return nil
+end
+
+local themes = {
+  default = {
+    vocal_principal   = {224, 90, 71},    -- #E05A47
+    backing_vocals    = {211, 139, 128}, -- #D38B80
+    bateria           = {59, 110, 140},   -- #3B6E8C
+    percussao         = {74, 159, 155},   -- #4A9F9B
+    baixo             = {109, 85, 122},   -- #6D557A
+    guitarra_eletrica = {74, 143, 98},  -- #4A8F62
+    violao            = {127, 156, 98},   -- #7F9C62
+    teclado           = {224, 146, 62},   -- #E0923E
+    synth             = {220, 174, 59},   -- #DCAE3B
+    cordas            = {163, 112, 76},   -- #A3704C
+    sopros            = {166, 75, 117},   -- #A64B75
+    efeitos           = {112, 128, 144},  -- #708090
+    pastas            = {62, 62, 62},     -- #3E3E3E
+    outro             = {150, 150, 150}
+  },
+  green = {
+    vocal_principal   = {100, 180, 100},  -- Verde claro
+    backing_vocals    = {140, 200, 140},  -- Verde pastel
+    bateria           = {34, 76, 34},     -- Verde floresta escuro
+    percussao         = {60, 120, 80},    -- Verde folha
+    baixo             = {107, 142, 35},   -- Verde oliva/musgo
+    guitarra_eletrica = {46, 139, 87},    -- Sea green
+    violao            = {143, 188, 143},  -- Dark sea green pastel
+    teclado           = {180, 210, 120},  -- Verde limão pastel
+    synth             = {120, 200, 160},  -- Menta
+    cordas            = {85, 107, 47},    -- Dark olive green
+    sopros            = {154, 205, 50},   -- Yellow green
+    efeitos           = {112, 140, 120},  -- Cinza esverdeado
+    pastas            = {45, 60, 50},     -- Cinza floresta escuro
+    outro             = {130, 150, 135}
+  },
+  purple = {
+    vocal_principal   = {210, 100, 210},  -- Magenta claro
+    backing_vocals    = {230, 160, 230},  -- Lilás pastel
+    bateria           = {75, 0, 130},     -- Índigo
+    percussao         = {138, 43, 226},   -- Blue violet
+    baixo             = {48, 25, 52},     -- Roxo escuro
+    guitarra_eletrica = {147, 112, 219},  -- Medium purple
+    violao            = {186, 85, 211},   -- Medium orchid
+    teclado           = {216, 191, 216},  -- Thistle
+    synth             = {123, 104, 238},  -- Medium slate blue
+    cordas            = {153, 50, 204},   -- Dark orchid
+    sopros            = {218, 112, 214},  -- Orchid
+    efeitos           = {120, 110, 140},  -- Cinza roxo
+    pastas            = {50, 45, 60},     -- Roxo acinzentado escuro
+    outro             = {140, 130, 150}
+  },
+  blue = {
+    vocal_principal   = {0, 162, 232},    -- Cyan blue
+    backing_vocals    = {153, 217, 234},  -- Light cyan
+    bateria           = {15, 76, 129},    -- Deep blue
+    percussao         = {74, 134, 232},   -- Bright blue
+    baixo             = {25, 45, 115},    -- Navy
+    guitarra_eletrica = {50, 100, 180},   -- Medium blue
+    violao            = {120, 160, 220},  -- Soft blue
+    teclado           = {100, 180, 220},  -- Ice blue
+    synth             = {160, 210, 240},  -- Light sky blue
+    cordas            = {90, 120, 160},   -- Steel blue
+    sopros            = {140, 180, 230},  -- Soft periwinkle
+    efeitos           = {120, 130, 160},  -- Slate blue
+    pastas            = {50, 55, 70},     -- Dark blue-gray
+    outro             = {130, 135, 150}
+  },
+  red = {
+    vocal_principal   = {220, 20, 60},    -- Crimson
+    backing_vocals    = {240, 128, 128},  -- Light coral
+    bateria           = {139, 0, 0},      -- Dark red
+    percussao         = {205, 92, 92},    -- Indian red
+    baixo             = {80, 10, 10},     -- Maroon
+    guitarra_eletrica = {180, 40, 40},    -- Rich red
+    violao            = {210, 100, 100},  -- Soft red
+    teclado           = {230, 140, 100},  -- Light salmon
+    synth             = {255, 180, 150},  -- Peach
+    cordas            = {160, 60, 60},    -- Brownish red
+    sopros            = {200, 80, 120},   -- Rose
+    efeitos           = {150, 120, 120},  -- Muted red-gray
+    pastas            = {65, 45, 45},     -- Dark red-gray
+    outro             = {140, 125, 125}
+  },
+  orange = {
+    vocal_principal   = {255, 100, 0},    -- Orange
+    backing_vocals    = {255, 160, 90},   -- Light orange
+    bateria           = {130, 50, 0},     -- Rust
+    percussao         = {180, 90, 30},    -- Burnt orange
+    baixo             = {60, 25, 0},      -- Dark brown
+    guitarra_eletrica = {220, 80, 10},    -- Dark orange
+    violao            = {240, 130, 50},   -- Soft orange
+    teclado           = {250, 180, 80},   -- Gold
+    synth             = {255, 210, 120},  -- Apricot
+    cordas            = {150, 85, 45},    -- Warm brown
+    sopros            = {210, 120, 80},   -- Terra cotta
+    efeitos           = {140, 125, 110},  -- Muted orange-gray
+    pastas            = {60, 50, 45},     -- Dark warm gray
+    outro             = {135, 125, 120}
+  },
+  yellow = {
+    vocal_principal   = {230, 210, 0},    -- Gold
+    backing_vocals    = {245, 235, 120},  -- Pale yellow
+    bateria           = {130, 120, 20},   -- Olive gold
+    percussao         = {180, 170, 40},   -- Brass
+    baixo             = {70, 65, 10},     -- Dark olive
+    guitarra_eletrica = {200, 180, 30},   -- Rich yellow
+    violao            = {220, 210, 100},  -- Soft yellow
+    teclado           = {240, 230, 150},  -- Straw
+    synth             = {255, 245, 190},  -- Cream
+    cordas            = {150, 140, 50},   -- Khaki
+    sopros            = {210, 200, 110},  -- Sand
+    efeitos           = {135, 135, 115},  -- Muted yellow-gray
+    pastas            = {55, 55, 45},     -- Dark olive-gray
+    outro             = {130, 130, 120}
+  },
+  vintage = {
+    vocal_principal   = {204, 78, 62},    -- Terracota
+    backing_vocals    = {220, 130, 110},  -- Areia avermelhada
+    bateria           = {90, 115, 135},   -- Azul vintage
+    percussao         = {140, 160, 160},  -- Cinza azulado
+    baixo             = {100, 80, 70},    -- Chocolate marrom
+    guitarra_eletrica = {115, 135, 100},  -- Verde oliva vintage
+    violao            = {165, 150, 120},  -- Cáqui / Palha
+    teclado           = {215, 160, 90},   -- Mostarda
+    synth             = {190, 135, 110},  -- Pêssego queimado
+    cordas            = {145, 105, 80},   -- Rust
+    sopros            = {180, 110, 120},  -- Dusky rose
+    efeitos           = {140, 140, 130},  -- Cinza quente
+    pastas            = {75, 70, 65},     -- Marrom acinzentado escuro
+    outro             = {130, 125, 120}
+  }
+}
+
+local function write_theme_to_ini(theme_name)
+  local t_colors = themes[theme_name]
+  if not t_colors then return end
+  local f = io.open(config_path, "w")
+  if f then
+    f:write("# Paleta de Cores " .. theme_name:upper() .. " para o AiNOMEATOR\n")
+    f:write("[Cores]\n")
+    local keys_order = {
+      "vocal_principal", "backing_vocals", "bateria", "percussao", "baixo",
+      "guitarra_eletrica", "violao", "teclado", "synth", "cordas", "sopros",
+      "efeitos", "pastas", "outro"
+    }
+    for _, k in ipairs(keys_order) do
+      local v = t_colors[k]
+      if v then
+        f:write(string.format("%s = #%02X%02X%02X\n", k, v[1], v[2], v[3]))
+      end
+    end
+    f:close()
+  end
 end
 
 local default_config = [[
@@ -682,45 +822,24 @@ end
 ------------------------------------------------------------------
 -- 1) opcoes do usuario
 ------------------------------------------------------------------
-local _, script_path = reaper.get_action_context()
-local script_dir = script_path:match("^(.*[/\\])")
 
-local os_name = reaper.GetOS()
-local is_windows = os_name:find("Win") ~= nil
-local sep = is_windows and "\\" or "/"
-
-local env_path = script_dir .. ".env"
-local config_path = script_dir .. "reaper_ai_track_namer_colors.ini"
-
-local saved_api_key = read_env_api_key(env_path)
 local config_colors, created_new = load_config(config_path)
 
 local only_selected = false
 local segment_seconds = 8
 local workers = 5
 local color_prompt = ""
-local entered_key = ""
 local script_running = true
 local inputs
 
-local function sync_api_key_to_env(api_key)
-  local trimmed_key = trim(api_key)
-  if trimmed_key == "" then
-    return false
-  end
-
-  if write_env_api_key(env_path, trimmed_key) then
-    saved_api_key = trimmed_key
-    return true
-  end
-
-  return false
-end
 
 local function start_analysis()
   track_info = {} -- Reseta o estado para evitar acúmulo de dados entre execuções
+  if current_theme ~= "custom" then
+    write_theme_to_ini(current_theme)
+  end
   local config_colors_file = config_path
-  if color_prompt ~= "" then
+  if current_theme == "custom" and color_prompt ~= "" then
     config_colors_file = script_dir .. "reaper_ai_track_namer_colors_prompt.ini"
   end
 
@@ -822,28 +941,36 @@ local function start_analysis()
   if DEBUG then
     reaper.ShowConsoleMsg("")  -- garante que o console abre
   end
-  log("==============================================")
-  log("AiNOMEATOR | Gemini Console")
-  log("----------------------------------------------")
-  log(string.format("Scan    : %d track(s)", n_jobs))
-  log(string.format("Threads : %d", workers))
-  log(string.format("Mode    : %s", analysis_mode == "detailed" and "Detailed" or "Fast"))
-  log("Output  : track names, colors, icons")
-  log("----------------------------------------------")
-  if created_new then
-    log("Color file created: " .. config_path)
-    log("You can edit this file to customize colors.")
-  else
-    log("Color settings loaded from: " .. config_path)
+  log("╭──────────────────────────────────────────────────────────╮")
+  log("│ ainomeator by jasko                                      │")
+  log("╰──────────────────────────────────────────────────────────╯")
+  log("")
+  log("[ setup ]")
+  local profile_name = "reaper_ai_track_namer_colors.ini"
+  if current_theme == "custom" and color_prompt ~= "" then
+    profile_name = "reaper_ai_track_namer_colors_prompt.ini"
   end
-  if not venv_exists then
-    log("[WARNING] Virtual environment not detected. Using system Python.")
-    log("Run setup if you want an isolated runtime.")
+  log("› profile  : " .. profile_name)
+  local backend_name = backend
+  if backend == "panns" then
+    backend_name = "panns (local/cnn14)"
+  elseif backend == "gemini" then
+    backend_name = "gemini (cloud/api)"
+  elseif backend == "hybrid_heuristic" then
+    backend_name = "hybrid_heuristic (PANNs + Gemini)"
+  elseif backend == "hybrid_chaining" then
+    backend_name = "hybrid_chaining (PANNs + Gemini review)"
   end
-  log(string.format("Starting analysis: %d track(s), %d thread(s)...", n_jobs, workers))
-  log("Progress will appear below in real time.\n")
+  log("› backend  : " .. backend_name)
+  local device_str = "cpu (checkpoint loaded)"
+  if backend == "gemini" then
+    device_str = "cloud api"
+  end
+  log("› device   : " .. device_str)
+  local target_str = string.format("%d tracks | %d thread | %s mode", n_jobs, workers, (analysis_mode == "detailed" and "detailed" or "fast"))
+  log("› target   : " .. target_str)
 
-  local local_threads = tonumber(inputs[4].val) or 1
+  local local_threads = tonumber(inputs[3].val) or 1
   local python_args = string.format(
     '-u "%s" "%s" "%s" --workers %d --segment-seconds %.2f --done-flag "%s" --config-path "%s" --panns-threads %d',
     batch_script, manifest_path, result_path, workers, segment_seconds, done_path, config_colors_file, local_threads
@@ -858,7 +985,7 @@ local function start_analysis()
   python_args = python_args .. ' --output-language ' .. sanitize_shell_arg(lang)
   python_args = python_args .. ' --backend ' .. sanitize_shell_arg(backend)
 
-  if color_prompt ~= "" then
+  if current_theme == "custom" and color_prompt ~= "" then
     local escaped_prompt = sanitize_shell_arg(color_prompt)
     python_args = python_args .. string.format(' --color-prompt "%s"', escaped_prompt)
   end
@@ -886,6 +1013,44 @@ local function start_analysis()
   local poll
 
   apply_results = function()
+    local function utf8_len(s)
+      if not s then return 0 end
+      if utf8 and utf8.len then
+        local len = utf8.len(s)
+        if len then return len end
+      end
+      local _, count = s:gsub("[\xc2-\xf4][\x80-\xbf]*", "")
+      return s:len() - count
+    end
+
+    local function format_ranges(indices)
+      if #indices == 0 then return "" end
+      table.sort(indices)
+      local ranges = {}
+      local start = indices[1]
+      local prev = indices[1]
+      
+      local function add_range(s, e)
+        if s == e then
+          table.insert(ranges, string.format("track %02d", s))
+        else
+          table.insert(ranges, string.format("tracks %02d-%02d", s, e))
+        end
+      end
+      
+      for i = 2, #indices do
+        if indices[i] == prev + 1 then
+          prev = indices[i]
+        else
+          add_range(start, prev)
+          start = indices[i]
+          prev = indices[i]
+        end
+      end
+      add_range(start, prev)
+      return table.concat(ranges, ", ")
+    end
+
     if not file_exists(result_path) then
       log("\n[ERROR] batch_rename.py did not generate the result file.")
       log("Possible causes:")
@@ -896,9 +1061,7 @@ local function start_analysis()
       return
     end
 
-    log("\n[OK] Analysis completed. Applying names and colors in Reaper...")
     config_colors = load_config(config_colors_file)
-
     local icon_files = list_icon_files(sep)
 
     reaper.Undo_BeginBlock()
@@ -908,6 +1071,8 @@ local function start_analysis()
     local processed_tracks = {}
     local track_categories = {}
     local track_instruments = {}
+    local color_groups = {}
+    local color_rgb = {}
 
     for line in io.lines(result_path) do
       if line ~= "" then
@@ -943,12 +1108,14 @@ local function start_analysis()
               reaper.GetSetMediaTrackInfo_String(info.track, "P_ICON", icon_path, true)
             end
 
-            log(string.format("   [✓] Faixa %d: %s -> Cor: %s (RGB: %d,%d,%d)", idx, newname, col_key, col[1], col[2], col[3]))
+            color_groups[col_key] = color_groups[col_key] or {}
+            table.insert(color_groups[col_key], idx)
+            color_rgb[col_key] = col
+
             processed_tracks[idx] = true
             applied = applied + 1
           else
             failed = failed + 1
-            log(string.format("  [✗] track %d '%s': %s", idx, info.name, errmsg or "falha desconhecida"))
           end
         end
       end
@@ -978,12 +1145,31 @@ local function start_analysis()
 
         local col = config_colors[col_key] or config_colors["outro"]
         reaper.SetTrackColor(info.track, reaper.ColorToNative(col[1], col[2], col[3]) | 0x1000000)
-        log(string.format("   [-] Faixa %d: %s -> Cor: %s (RGB: %d,%d,%d) (Utilidade/Ignorada)", idx, track_name, col_key, col[1], col[2], col[3]))
+
+        color_groups[col_key] = color_groups[col_key] or {}
+        table.insert(color_groups[col_key], idx)
+        color_rgb[col_key] = col
+      end
+    end
+
+    log("\n[ reaper integration ]")
+    log("› applying metadata & rgb color profiles...")
+    local keys_order = {
+      "vocal_principal", "backing_vocals", "bateria", "percussao", "baixo",
+      "guitarra_eletrica", "violao", "teclado", "synth", "cordas", "sopros",
+      "efeitos", "pastas", "outro"
+    }
+    for _, col_key in ipairs(keys_order) do
+      local indices = color_groups[col_key]
+      if indices and #indices > 0 then
+        local rgb = color_rgb[col_key]
+        local trk_str = format_ranges(indices)
+        log(string.format("  + %-18s [rgb: %03d,%03d,%03d] : %s", col_key, rgb[1], rgb[2], rgb[3], trk_str))
       end
     end
 
     if sort_tracks then
-      log("\n[OK] Reordenando as tracks por familia de instrumentos...")
+      log("› reordering tracks by instrument family...")
       sort_project_tracks(track_categories, track_instruments)
     end
 
@@ -993,9 +1179,33 @@ local function start_analysis()
     reaper.Undo_EndBlock("IA: renomear/colorir tracks (AiNOMEATOR)", -1)
 
     log("")
-    log(string.format("╔══════════════════════════════════════════════╗"))
-    log(string.format(t("msg_done"), applied, failed))
-    log(string.format("╚══════════════════════════════════════════════╝"))
+    log("╭──────────────────────────────────────────────────────────╮")
+    local success_str = string.format("✔ success      : %d applied ", applied)
+    local error_str = string.format("%d errors", failed)
+    local left_pad = 28 - utf8_len(success_str)
+    if left_pad > 0 then
+      success_str = success_str .. string.rep(" ", left_pad)
+    end
+    local line1 = success_str .. "│ " .. error_str
+    local line1_pad = 66 - utf8_len(line1)
+    if line1_pad > 0 then
+      line1 = line1 .. string.rep(" ", line1_pad)
+    end
+    log("│ " .. line1 .. " │")
+
+    local disp_path = result_path:gsub("^[Cc]:[/\\]Users[/\\][^/\\]+[/\\]AppData[/\\]Roaming[/\\]", "~\\appdata\\roaming\\")
+    disp_path = disp_path:gsub("/", "\\")
+    local line2 = string.format("📄 export log  : %s", disp_path)
+    local line2_pad = 66 - utf8_len(line2)
+    if line2_pad > 0 then
+      line2 = line2 .. string.rep(" ", line2_pad)
+    else
+      local label = "📄 export log  : "
+      local path_space = 66 - utf8_len(label)
+      line2 = label .. "..." .. string.sub(disp_path, -path_space + 3)
+    end
+    log("│ " .. line2 .. " │")
+    log("╰──────────────────────────────────────────────────────────╯")
 
 
   end
@@ -1062,6 +1272,7 @@ local function in_rect(x, y, w, h)
   return gfx.mouse_x >= x and gfx.mouse_x <= x + w and gfx.mouse_y >= y and gfx.mouse_y <= y + h
 end
 
+
 local layout = {
   -- Idiomas
   lang_en = { x = 241, y = 12, w = 32, h = 16, radio_x = 246, radio_y = 20, radio_r = 3 },
@@ -1082,14 +1293,13 @@ local layout = {
   backend_cb_x = 30,
   backend_cb_size = 18,
   
-  -- Botões de API (deslocados +50px)
-  api_eye = { x = 210, y = 520, w = 40, h = 30 },
-  api_save = { x = 250, y = 520, w = 40, h = 30 },
+  -- Theme Selector (novo widget)
+  theme_selector = { x = 30, y = 465, w = 260, h = 30 },
   
-  -- Outros Botões (deslocados +50px)
+  -- Outros Botões (deslocados)
   copy_logs = { x = 190, y = 105, w = 100, h = 24 },
-  analyze = { x = 30, y = 585, w = 260, h = 36 },
-  close = { x = 30, y = 655, w = 260, h = 36 }
+  analyze = { x = 30, y = 580, w = 260, h = 36 },
+  close = { x = 30, y = 650, w = 260, h = 36 }
 }
 
 local backend_options = {
@@ -1097,6 +1307,18 @@ local backend_options = {
   { key = "panns",              label_key = "backend_panns" },
   { key = "hybrid_heuristic",   label_key = "backend_hybrid_heuristic" },
   { key = "hybrid_chaining",    label_key = "backend_hybrid_chaining" },
+}
+
+local theme_options = {
+  { key = "default",            label_key = "theme_default" },
+  { key = "green",              label_key = "theme_green" },
+  { key = "purple",             label_key = "theme_purple" },
+  { key = "blue",               label_key = "theme_blue" },
+  { key = "red",                label_key = "theme_red" },
+  { key = "orange",             label_key = "theme_orange" },
+  { key = "yellow",             label_key = "theme_yellow" },
+  { key = "vintage",            label_key = "theme_vintage" },
+  { key = "custom",             label_key = "theme_custom" }
 }
 
 local function open_url(url)
@@ -1126,12 +1348,9 @@ end
 only_selected = false
 sort_tracks = (saved_sort_tracks == "true")
 analysis_mode = "detailed"
-local show_api_key = false
-
 inputs = {
   { label = t("thread_label"), val = "1", placeholder = "1-20", is_numeric = true, limit = 2, x = 30, y = 390, w = 110, h = 30 },
-  { label = t("prompt_label"), val = "", placeholder = t("prompt_placeholder"), is_numeric = false, limit = 100, x = 30, y = 455, w = 260, h = 30 },
-  { label = t("api_label"), val = saved_api_key, placeholder = t("api_placeholder"), is_numeric = false, is_password = true, limit = 200, x = 30, y = 520, w = 170, h = 30 },
+  { label = t("prompt_label"), val = "", placeholder = t("prompt_placeholder"), is_numeric = false, limit = 100, x = 30, y = 530, w = 260, h = 30 },
   { label = t("local_thread_label"), val = saved_panns_threads, placeholder = "1-16", is_numeric = true, limit = 2, x = 180, y = 390, w = 110, h = 30 }
 }
 
@@ -1139,9 +1358,7 @@ local function refresh_language_labels()
   inputs[1].label = t("thread_label")
   inputs[2].label = t("prompt_label")
   inputs[2].placeholder = t("prompt_placeholder")
-  inputs[3].label = t("api_label")
-  inputs[3].placeholder = t("api_placeholder")
-  inputs[4].label = t("local_thread_label")
+  inputs[3].label = t("local_thread_label")
 end
 
 local function set_language(new_lang)
@@ -1450,7 +1667,41 @@ local function draw_gui()
 
     -- Linha divisória
     gfx.r, gfx.g, gfx.b = 0.2, 0.2, 0.2
-    gfx.line(30, 370, 290, 370)
+    gfx.line(30, 355, 290, 355)
+
+    -- Linha divisória após as threads
+    gfx.line(30, 435, 290, 435)
+
+    -- Theme Selector Label
+    gfx.setfont(1, "Segoe UI", 10)
+    gfx.r, gfx.g, gfx.b = 0.65, 0.65, 0.65
+    gfx.x, gfx.y = layout.theme_selector.x, layout.theme_selector.y - 20
+    gfx.drawstr(t("theme_label"))
+
+    -- Theme Selector Box
+    local ts = layout.theme_selector
+    local mouse_over_ts = in_rect(ts.x, ts.y, ts.w, ts.h)
+    if mouse_over_ts then
+      gfx.r, gfx.g, gfx.b = 0.25, 0.25, 0.25
+    else
+      gfx.r, gfx.g, gfx.b = 0.17, 0.17, 0.17
+    end
+    gfx.rect(ts.x, ts.y, ts.w, ts.h, 1) -- fill
+    gfx.r, gfx.g, gfx.b = 0.27, 0.27, 0.27
+    gfx.rect(ts.x, ts.y, ts.w, ts.h, 0) -- border
+
+    -- Theme Selector Text
+    gfx.r, gfx.g, gfx.b = 1.0, 1.0, 1.0
+    gfx.setfont(1, "Segoe UI", 10, 98) -- Bold
+    local theme_text = t("theme_" .. current_theme)
+    local tstw, tsth = gfx.measurestr(theme_text)
+    gfx.x = ts.x + (ts.w - tstw)/2
+    gfx.y = ts.y + (ts.h - tsth)/2
+    gfx.drawstr(theme_text)
+
+    -- Linha divisória após o Theme
+    gfx.r, gfx.g, gfx.b = 0.2, 0.2, 0.2
+    gfx.line(30, 505, 290, 505)
 
     -- Campos de Texto
     for i, inp in ipairs(inputs) do
@@ -1459,8 +1710,12 @@ local function draw_gui()
       gfx.x, gfx.y = inp.x, inp.y - 20
       gfx.drawstr(inp.label)
 
-      -- Caixa de input
-      gfx.r, gfx.g, gfx.b = 0.17, 0.17, 0.17
+      -- Caixa de input (cinza se desabilitada)
+      if i == 2 and current_theme ~= "custom" then
+        gfx.r, gfx.g, gfx.b = 0.10, 0.10, 0.10
+      else
+        gfx.r, gfx.g, gfx.b = 0.17, 0.17, 0.17
+      end
       gfx.rect(inp.x, inp.y, inp.w, inp.h, 1) -- preenchimento
 
       -- Borda (destaque Coral se focado)
@@ -1473,7 +1728,11 @@ local function draw_gui()
 
       -- Valor ou Placeholder
       local max_w = inp.w - 16
-      if inp.val == "" and focused_input ~= i then
+      if i == 2 and current_theme ~= "custom" then
+        gfx.r, gfx.g, gfx.b = 0.35, 0.35, 0.35 -- Muted text
+        gfx.x, gfx.y = inp.x + 8, inp.y + 7
+        gfx.drawstr(t("theme_prompt_disabled"))
+      elseif inp.val == "" and focused_input ~= i then
         gfx.r, gfx.g, gfx.b = 0.4, 0.4, 0.4 -- Cinza apagado para placeholder
         gfx.x, gfx.y = inp.x + 8, inp.y + 7
         
@@ -1512,52 +1771,16 @@ local function draw_gui()
       end
     end
 
-    -- Botao Mostrar/Ocultar para a API Key
-    local eye = layout.api_eye
-    local mouse_over_eye = in_rect(eye.x, eye.y, eye.w, eye.h)
-    if mouse_over_eye then
-      gfx.r, gfx.g, gfx.b = 0.25, 0.25, 0.25
-    else
-      gfx.r, gfx.g, gfx.b = 0.18, 0.18, 0.18
-    end
-    gfx.rect(eye.x, eye.y, eye.w, eye.h, 1)
-    gfx.r, gfx.g, gfx.b = 0.27, 0.27, 0.27
-    gfx.rect(eye.x, eye.y, eye.w, eye.h, 0)
-    gfx.r, gfx.g, gfx.b = 0.8, 0.8, 0.8
-    local eye_text = show_api_key and t("btn_hide") or t("btn_show")
-    local etw, eth = gfx.measurestr(eye_text)
-    gfx.x = eye.x + (eye.w - etw)/2
-    gfx.y = eye.y + (eye.h - eth)/2
-    gfx.drawstr(eye_text)
-
-    -- Botao Salvar para a API Key
-    local save = layout.api_save
-    local mouse_over_save = in_rect(save.x, save.y, save.w, save.h)
-    if mouse_over_save then
-      gfx.r, gfx.g, gfx.b = 0.42, 0.24, 0.24
-    else
-      gfx.r, gfx.g, gfx.b = 0.34, 0.18, 0.18
-    end
-    gfx.rect(save.x, save.y, save.w, save.h, 1)
-    gfx.r, gfx.g, gfx.b = 0.46, 0.28, 0.28
-    gfx.rect(save.x, save.y, save.w, save.h, 0)
-    gfx.r, gfx.g, gfx.b = 1.0, 1.0, 1.0
-    gfx.setfont(1, "Segoe UI", 8, 98)
-    local stw, sth = gfx.measurestr(t("btn_save"))
-    gfx.x = save.x + (save.w - stw)/2
-    gfx.y = save.y + (save.h - sth)/2
-    gfx.drawstr(t("btn_save"))
-
     -- Info de resumo econômico/faixas dinâmico
     local n_jobs, n_skipped = update_analysis_summary_cached()
     gfx.setfont(1, "Segoe UI", 11)
     if n_jobs == 0 then
       gfx.r, gfx.g, gfx.b = 0.8, 0.6, 0.2 -- Amarelo/Dourado suave
-      gfx.x, gfx.y = 30, 558
+      gfx.x, gfx.y = 30, 552
       gfx.drawstr(t("msg_no_audio"))
     else
       gfx.r, gfx.g, gfx.b = 0.65, 0.65, 0.65 -- Cinza suave
-      gfx.x, gfx.y = 30, 562
+      gfx.x, gfx.y = 30, 564
       local msg = string.format(t("msg_summary"), n_jobs, n_skipped)
       gfx.drawstr(msg)
     end
@@ -1579,17 +1802,17 @@ local function draw_gui()
     gfx.drawstr(t("btn_analyze"))
 
     -- Aviso experimental
-    gfx.setfont(1, "Segoe UI", 12)
+    gfx.setfont(1, "Segoe UI", 11)
     gfx.r, gfx.g, gfx.b = 0.33, 0.33, 0.33
     local note1 = t("experimental_notice_1")
     local note2 = t("experimental_notice_2")
     local note1_w = gfx.measurestr(note1)
     local note2_w = gfx.measurestr(note2)
     gfx.x = (gfx.w - note1_w) / 2
-    gfx.y = 635
+    gfx.y = 625
     gfx.drawstr(note1)
     gfx.x = (gfx.w - note2_w) / 2
-    gfx.y = 646
+    gfx.y = 636
     gfx.drawstr(note2)
 
     -- Creditos visiveis
@@ -1616,7 +1839,7 @@ local function draw_gui()
     gfx.drawstr(dots)
 
     -- Caixa de Logs
-    local box_x, box_y, box_w, box_h = 30, 135, 260, 455
+    local box_x, box_y, box_w, box_h = 30, 135, 260, 525
     gfx.r, gfx.g, gfx.b = 0.08, 0.08, 0.08
     gfx.rect(box_x, box_y, box_w, box_h, 1)
     gfx.r, gfx.g, gfx.b = 0.2, 0.2, 0.2
@@ -1638,7 +1861,7 @@ local function draw_gui()
     end
 
     -- Caixa de Logs
-    local box_x, box_y, box_w, box_h = 30, 135, 260, 455
+    local box_x, box_y, box_w, box_h = 30, 135, 260, 525
     gfx.r, gfx.g, gfx.b = 0.08, 0.08, 0.08
     gfx.rect(box_x, box_y, box_w, box_h, 1)
     gfx.r, gfx.g, gfx.b = 0.2, 0.2, 0.2
@@ -1726,32 +1949,47 @@ local function update_gui()
         end
       end
 
+      -- Clique no Theme Selector
+      local ts = layout.theme_selector
+      if in_rect(ts.x, ts.y, ts.w, ts.h) then
+        local current_idx = 1
+        for idx, opt in ipairs(theme_options) do
+          if opt.key == current_theme then
+            current_idx = idx
+            break
+          end
+        end
+        current_idx = current_idx + 1
+        if current_idx > #theme_options then
+          current_idx = 1
+        end
+        current_theme = theme_options[current_idx].key
+        reaper.SetExtState("AiNOMEATOR", "theme", current_theme, true)
+        
+        -- Escreve a paleta se for um tema fixo
+        if current_theme ~= "custom" then
+          write_theme_to_ini(current_theme)
+          inputs[2].val = "" -- limpa o prompt
+        end
+        focused_input = nil
+        return "redraw"
+      end
+
       -- Clique nos campos de texto
       local clicked_input = false
       for i, inp in ipairs(inputs) do
         if in_rect(inp.x, inp.y, inp.w, inp.h) then
-          focused_input = i
-          clicked_input = true
+          if i == 2 and current_theme ~= "custom" then
+            -- desabilitado
+          else
+            focused_input = i
+            clicked_input = true
+          end
           break
         end
       end
       if not clicked_input then
         focused_input = nil
-      end
-
-      -- Clique no botao Mostrar/Ocultar
-      local eye = layout.api_eye
-      if in_rect(eye.x, eye.y, eye.w, eye.h) then
-        show_api_key = not show_api_key
-      end
-
-      -- Clique no botao Salvar API Key
-      local save = layout.api_save
-      if in_rect(save.x, save.y, save.w, save.h) then
-        if not sync_api_key_to_env(inputs[3].val) then
-          reaper.MB("Failed to save the Gemini API key to .env.", "AiNOMEATOR", 0)
-        end
-        return "redraw"
       end
 
       -- Clique no botao ANALISAR
@@ -1764,7 +2002,7 @@ local function update_gui()
       gfx.setfont(1, "Segoe UI", 10)
       local cr_w, cr_h = gfx.measurestr("by jasko")
       local cr_x = (gfx.w - cr_w) / 2
-      local cr_y = 616
+      local cr_y = 746
       if in_rect(cr_x, cr_y, cr_w, cr_h) then
         open_url("https://jasko.dev")
         return "redraw"
@@ -1857,8 +2095,8 @@ local function run_gui_loop()
   end
 
   -- Travar o resize
-  if gfx.w ~= 320 or gfx.h ~= 710 then
-    gfx.init("AiNOMEATOR", 320, 710, 0, gfx.x, gfx.y)
+  if gfx.w ~= 320 or gfx.h ~= 700 then
+    gfx.init("AiNOMEATOR", 320, 700, 0, gfx.x, gfx.y)
   end
 
   draw_gui()
@@ -1872,26 +2110,13 @@ local function run_gui_loop()
     elseif workers > 20 then workers = 20 end
     inputs[1].val = tostring(workers)
 
-    local local_threads = tonumber(sanitize_local_thread_input(inputs[4].val)) or 1
+    local local_threads = tonumber(sanitize_local_thread_input(inputs[3].val)) or 1
     if local_threads < 1 then local_threads = 1
     elseif local_threads > 16 then local_threads = 16 end
-    inputs[4].val = tostring(local_threads)
-    reaper.SetExtState("AiNOMEATOR", "panns_threads", inputs[4].val, true)
+    inputs[3].val = tostring(local_threads)
+    reaper.SetExtState("AiNOMEATOR", "panns_threads", inputs[3].val, true)
 
     color_prompt = trim(inputs[2].val)
-    entered_key = trim(inputs[3].val)
-
-    if entered_key == "" then
-      reaper.MB(t("msg_empty_api"), "AiNOMEATOR", 0)
-      reaper.defer(run_gui_loop)
-      return
-    end
-
-    if not sync_api_key_to_env(entered_key) then
-      reaper.MB("Failed to save the Gemini API key to .env.", "AiNOMEATOR", 0)
-      reaper.defer(run_gui_loop)
-      return
-    end
 
     gui_state = "analyzing"
     start_analysis()
@@ -1906,7 +2131,7 @@ local function run_gui_loop()
 end
 
 -- Inicializa a tela grafica customizada centralizada na tela
-local win_w, win_h = 320, 710
+local win_w, win_h = 320, 700
 local win_x, win_y = 150, 150 -- Fallback padrão se my_getViewport não estiver disponível
 
 if reaper.my_getViewport then

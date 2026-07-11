@@ -56,7 +56,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-from audio_utils import extract_best_segment, downmix_resample, extract_three_peaks, convert_to_mp3_128k, remove_all_silence
+from audio_utils import extract_best_segment, downmix_resample, extract_three_peaks, convert_to_mp3_128k
 from classify_track import classify_audio_bytes, MODELOS_FALLBACK
 from yamnet_classify import classify_with_yamnet
 from essentia_classify import classify_with_essentia
@@ -73,18 +73,15 @@ LOCAL_BACKENDS = {
 
 class SharedModelList:
     def __init__(self, initial_models):
-        self.lock = threading.Lock()
         self.models = list(initial_models)
 
     def get_models(self):
-        with self.lock:
-            return list(self.models)
+        return list(self.models)
 
     def remove_model(self, model):
-        with self.lock:
-            if model in self.models and len(self.models) > 1:
-                print(f"\n  [AVISO] Modelo '{model}' indisponível/falhou! Ativando fallback global de modelo para todas as demais faixas do lote...")
-                self.models.remove(model)
+        if model in self.models and len(self.models) > 1:
+            print(f"\n  [AVISO] Modelo '{model}' indisponível/falhou! Ativando fallback global de modelo para todas as demais faixas do lote...")
+            self.models.remove(model)
 
 
 def check_api_availability(client, models):
@@ -697,8 +694,7 @@ def main():
 
     shared_models = SharedModelList(initial_models)
 
-    print(f"[batch_rename] {total} track(s) in queue, {args.workers} thread(s) in parallel "
-          f"(modelo principal: {initial_models[0]})...")
+    print(f"\n[ analysis : {args.backend} {'local' if use_local_backend else 'cloud'} inference ]")
 
     results = {}
     t0 = time.time()
@@ -714,11 +710,17 @@ def main():
             results[idx] = result
             done += 1
             if "error" in result:
-                print(f"  [ERRO] [{done}/{total}] track {idx}: {result['error'][:100]}")
+                print(f"✖ trk {idx:02d} │ error     → {result['error'][:25]:<21} │")
             else:
-                modelo_usado = result.get('_model_usado', '?')
-                print(f"  [OK]   [{done}/{total}] track {idx}: {result.get('category')} - "
-                      f"{result.get('instrument')} (confianca {result.get('confidence')}) [{modelo_usado}]")
+                category = result.get('category', 'other')
+                if category == 'outro':
+                    category = 'other'
+                instrument = result.get('instrument', '')
+                try:
+                    conf = float(result.get('confidence', 0)) * 100
+                except (ValueError, TypeError):
+                    conf = 0.0
+                print(f"✔ trk {idx:02d} │ {category:<9} → {instrument:<21} │ conf: {conf:04.1f}%")
 
     with open(args.result_path, "w", encoding="utf-8") as f:
         for idx, path, start, dur in entries:
@@ -731,9 +733,8 @@ def main():
                     f"{_sanitize(r.get('instrument'))}\t{r.get('confidence', '')}\t\n"
                 )
 
-    ok_count = sum(1 for r in results.values() if "error" not in r)
     elapsed = time.time() - t0
-    print(f"\n[DONE] Completed in {elapsed:.1f}s  |  {ok_count}/{total} ok  |  resultado -> {args.result_path}")
+    print(f"› analysis completed in {elapsed:.1f}s")
 
     # Cria o arquivo sentinela APOS gravar o result.tsv por completo.
     # O Lua faz polling nesse arquivo pra saber que pode ler o resultado sem

@@ -111,7 +111,7 @@ def _get_model():
             from panns_inference import AudioTagging, labels
             import torch
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            print(f"  [PANNs] Carregando modelo Cnn14 (device={device}) (baixa na primeira vez, ~300MB)...")
+            print("  [PANNs] Loading CNN14 AI Model (device={device}) (~300MB)...")
             _audio_tagger = AudioTagging(checkpoint_path=None, device=device)
             _panns_labels = labels
     return _audio_tagger, _panns_labels

@@ -133,43 +133,16 @@ def extract_best_segment(audio_path, out_path, segment_seconds=8, hop_seconds=0.
 
 def downmix_resample(in_path, out_path, target_sr=24000, keep_stereo=False):
     """
-    Converte pra mono + reduz a taxa de amostragem, gerando um wav bem
-    menor/mais leve pra mandar pra API. A analise so precisa reconhecer
-    o instrumento, nao precisa de qualidade de audiofilo - isso deixa o
-    envio bem mais rapido, principalmente com varias tracks em paralelo.
-
-    Usa 24kHz em vez de 16kHz pra preservar mais harmonicos superiores
-    que ajudam a IA a distinguir articulacoes (pizzicato vs. bateria,
-    "ar" de flauta vs. synth, etc). Um trecho de 8s mono 24kHz 16-bit
-    da uns 384KB - aumento aceitavel pro ganho de acuracia.
-
-    Nota: o downsample usa interpolacao linear (np.interp), que e rapido
-    e sem dependencias, mas introduce leve aliasing acima de 12kHz.
-    Para classificacao de instrumento isso e aceitavel. Veja o docstring
-    do modulo para detalhes e alternativas.
+    Converte pra mono + reduz a taxa de amostragem usando ffmpeg, gerando um wav bem
+    menor/mais leve pra mandar pra API.
     """
-    data, sr = sf.read(in_path, always_2d=True)
+    ac_channels = "2" if keep_stereo else "1"
+    cmd = ["ffmpeg", "-y", "-i", in_path, "-ac", ac_channels]
+    if target_sr is not None:
+        cmd.extend(["-ar", str(target_sr)])
+    cmd.extend(["-c:a", "pcm_s16le", out_path])
     
-    if keep_stereo:
-        out_data = data
-    else:
-        out_data = data.mean(axis=1, keepdims=True)
-
-    if target_sr is not None and sr != target_sr and out_data.shape[0] > 1:
-        duration = out_data.shape[0] / sr
-        n_target = max(1, int(round(duration * target_sr)))
-        x_old = np.linspace(0, duration, num=out_data.shape[0], endpoint=False)
-        x_new = np.linspace(0, duration, num=n_target, endpoint=False)
-        
-        resampled_channels = []
-        for ch in range(out_data.shape[1]):
-            resampled_channels.append(np.interp(x_new, x_old, out_data[:, ch]))
-        
-        out_data = np.column_stack(resampled_channels)
-    else:
-        target_sr = sr  # Mantem o samplerate original caso target_sr seja None
-
-    sf.write(out_path, out_data.astype(np.float32), target_sr, subtype="PCM_16")
+    subprocess.run(cmd, check=True, capture_output=True, timeout=60)
     return out_path
 
 
@@ -230,87 +203,6 @@ def extract_three_peaks(audio_path, out_path, search_start_seconds=None, search_
     sf.write(out_path, concatenated, samplerate)
     return out_path, 0, concatenated.shape[0] / samplerate
 
-
-def remove_all_silence(in_path, out_path, threshold_db=-55.0, block_duration_s=0.05, min_sound_duration_s=0.1, min_silence_duration_s=0.3):
-    """
-    Remove todos os silêncios (início, meio e fim) do arquivo de áudio
-    e salva apenas as partes ativas concatenadas no out_path.
-    """
-    data, samplerate = _read_audio(in_path)
-    if data.shape[0] == 0:
-        sf.write(out_path, data, samplerate)
-        return out_path
-
-    # Converte para mono para cálculo da energia
-    if len(data.shape) > 1 and data.shape[1] > 1:
-        mono = np.max(np.abs(data), axis=1)
-    else:
-        mono = np.abs(data.flatten())
-
-    block_len = int(block_duration_s * samplerate)
-    if block_len <= 0:
-        block_len = 1
-
-    num_blocks = data.shape[0] // block_len
-    if num_blocks == 0:
-        sf.write(out_path, data, samplerate)
-        return out_path
-
-    threshold = 10 ** (threshold_db / 20.0)
-
-    # Reshape mono para blocos
-    trimmed_mono = mono[:num_blocks * block_len]
-    blocks = trimmed_mono.reshape((num_blocks, block_len))
-    block_max = np.max(blocks, axis=1)
-
-    is_sound = block_max > threshold
-
-    # Parâmetros de suavização
-    min_silence_blocks = int(round(min_silence_duration_s / block_duration_s))
-    min_sound_blocks = int(round(min_sound_duration_s / block_duration_s))
-
-    # Preenche silêncios muito curtos (ex: pausas entre palavras)
-    silence_count = 0
-    for i in range(num_blocks):
-        if not is_sound[i]:
-            silence_count += 1
-        else:
-            if silence_count > 0 and silence_count < min_silence_blocks:
-                is_sound[i - silence_count : i] = True
-            silence_count = 0
-    if silence_count > 0 and silence_count < min_silence_blocks:
-        is_sound[num_blocks - silence_count : num_blocks] = True
-
-    # Descarta ruídos de som muito curtos (ex: cliques de transientes)
-    sound_count = 0
-    for i in range(num_blocks):
-        if is_sound[i]:
-            sound_count += 1
-        else:
-            if sound_count > 0 and sound_count < min_sound_blocks:
-                is_sound[i - sound_count : i] = False
-            sound_count = 0
-    if sound_count > 0 and sound_count < min_sound_blocks:
-        is_sound[num_blocks - sound_count : num_blocks] = False
-
-    # Junta os índices de samples a serem mantidos
-    keep_indices = []
-    for i in range(num_blocks):
-        if is_sound[i]:
-            keep_indices.extend(range(i * block_len, (i + 1) * block_len))
-
-    # Adiciona o restante se o último bloco tinha som
-    if is_sound[-1] and data.shape[0] > num_blocks * block_len:
-        keep_indices.extend(range(num_blocks * block_len, data.shape[0]))
-
-    if len(keep_indices) == 0:
-        # Se tudo for silêncio, exporta apenas 1 segundo do início para não dar erro de arquivo vazio na API
-        fallback_len = min(data.shape[0], int(1.0 * samplerate))
-        sf.write(out_path, data[:fallback_len], samplerate)
-    else:
-        sf.write(out_path, data[np.array(keep_indices)], samplerate)
-
-    return out_path
 
 
 def convert_to_mp3_128k(in_wav_path, out_mp3_path):
