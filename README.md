@@ -22,13 +22,7 @@
 ## Overview
 
 > [!WARNING]
-> **Note:** This is an experimental project. The AI models under the hood can still make mistakes. We warmly welcome any suggestions, feedback, or pull requests to help improve the classification pipelines!
-
-Exporting stems from modern DAWs or receiving poorly named tracks from clients usually means spending hours manually renaming, coloring, and organizing the session before you can even start mixing.
-
-AI Nomeator offloads this heavy lifting to a background AI processor. By utilizing a hybrid model approach (combining local CNNs and cloud-based Gemini), it accurately identifies the instruments playing in each stem and automatically organizes your entire Reaper project.
-
-A fully structured, color-coded, and properly named Reaper session ready for mixing in minutes, saving you hours of tedious administrative work.
+> This is an experimental project. The AI models under the hood can still make mistakes. We warmly welcome any suggestions, feedback, or pull requests to help improve the classification pipelines!
 
 ---
 
@@ -36,7 +30,7 @@ A fully structured, color-coded, and properly named Reaper session ready for mix
 ### Prerequisites
 
 - **Python 3.9+**.
-- **Free Gemini API Key**.
+- *(Optional)* Gemini API Key.
 - *(Optional)* SWS Extension for color synchronization.
 
 ### Installation
