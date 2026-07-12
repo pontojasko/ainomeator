@@ -80,7 +80,7 @@ Expanding the settings panel allows you to customize the underlying AI models an
 #### Some tips
 
 - **Analysis Mode**: **Detailed** is still a pretty fast option.
-- **Analysis Backend**: start with **PANNs** as your baseline. It is generally the most fast starting point. You can also test Gemini or a hybrid solution if you are working with synth-based music or want to explore another results.
+- **Analysis Backend**: start with **PANNs** as your baseline. You can also test Gemini or a hybrid solution if you are working with synth-based music or want to explore another results.
 - **Local Threads**: **the.more.the.merrier**
 
 ---
@@ -92,3 +92,10 @@ Expanding the settings panel allows you to customize the underlying AI models an
 
 - **503 / 429 Errors**: Gemini might return temporary rate limit errors. Reduce the parallel threads setting in the GUI.
 - **Invalid Python Path**: Ensure you restart Reaper or your computer after adding Python to your system PATH.
+  
+---
+
+## License
+This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](https://github.com/pontojasko/ainomeator/blob/main/LICENSE) file for details.
+
+You can also read more about the license at the [official GNU website](https://www.gnu.org/licenses/gpl-3.0.html).
