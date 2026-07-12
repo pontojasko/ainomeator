@@ -18,20 +18,13 @@
   <br />
   <br />
 
-  <table>
-    <tr>
-      <td align="center" valign="top">
-        <img src="screenshots/compactedmod.png" alt="AiNOMEATOR Compact UI" width="320"/>
-        <br />
-        <sub>Compact UI</sub>
-      </td>
-      <td align="center" valign="top">
-        <img src="screenshots/advancedoptions.png" alt="AiNOMEATOR Advanced Options" width="320"/>
-        <br />
-        <sub>Advanced Options</sub>
-      </td>
-    </tr>
-  </table>
+  <p align="center">
+    <img src="screenshots/compactedmod.png" alt="AiNOMEATOR Compact UI" width="320" valign="top" />
+    &nbsp;&nbsp;&nbsp;&nbsp;
+    <img src="screenshots/advancedoptions.png" alt="AiNOMEATOR Advanced Options" width="320" valign="top" />
+    <br />
+    <em>Left: Compact UI &nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp;&nbsp; Right: Advanced Options (expanded view)</em>
+  </p>
 </div>
 
 ---
