@@ -15,6 +15,23 @@
   <img src="screenshots/desktop.gif" alt="AiNOMEATOR running in Reaper" width="720" />
   <br />
   <em>Demo — names, colors and icons applied automatically by AI</em>
+  <br />
+  <br />
+
+  <table>
+    <tr>
+      <td align="center" valign="top">
+        <img src="screenshots/compactedmod.png" alt="AiNOMEATOR Compact UI" width="320"/>
+        <br />
+        <sub>Compact UI</sub>
+      </td>
+      <td align="center" valign="top">
+        <img src="screenshots/advancedoptions.png" alt="AiNOMEATOR Advanced Options" width="320"/>
+        <br />
+        <sub>Advanced Options</sub>
+      </td>
+    </tr>
+  </table>
 </div>
 
 ---
