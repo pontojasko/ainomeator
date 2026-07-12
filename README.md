@@ -9,7 +9,7 @@
 
   Automatically identify, rename, and colorize your Reaper tracks using AI
 
-  [Getting Started](#getting-started) · [Report Bug](https://github.com/pontojasko/ReaperAiNOMEATOR/issues)
+  [Getting Started](#getting-started)
 
   <br />
   <img src="screenshots/desktop.gif" alt="AiNOMEATOR running in Reaper" width="720" />
