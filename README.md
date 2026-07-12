@@ -78,7 +78,7 @@ Expanding the settings panel allows you to customize the underlying AI models an
 </p>
 
 - **Analysis Mode**: use **Detailed**.
-- **Analysis Backend**: start with **PANNs** as your baseline. It is generally the most fast starting point. You can also test Gemini or a hybrid solution if you are working with EDM Music or want to explore another results.
+- **Analysis Backend**: start with **PANNs** as your baseline. It is generally the most fast starting point. You can also test Gemini or a hybrid solution if you are working with synth-based mysic like House or want to explore another results.
 - **Parallel Tracks**: with Gemini, keep the thread count `1` to avoid rate limits.
 - **Local Threads**: bigger better. 
 
