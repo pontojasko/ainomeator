@@ -1111,6 +1111,11 @@ local function start_analysis()
   log("╰──────────────────────────────────────────────────────────╯")
   log("")
   log("[ setup ]")
+  if not venv_exists then
+    log(t("msg_venv_missing"))
+    log(t("msg_venv_hint"))
+    log("")
+  end
   local profile_name = "colors.ini"
   if current_theme == "custom" and color_prompt ~= "" then
     profile_name = "colors_prompt.ini"

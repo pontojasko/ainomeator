@@ -19,6 +19,38 @@ Requisitos:
 
 import sys
 import os
+
+# --- Verify dependencies ---
+REQUIRED_PACKAGES = [
+    ("dotenv", "python-dotenv"),
+    ("google.genai", "google-genai"),
+    ("numpy", "numpy"),
+    ("soundfile", "soundfile"),
+    ("panns_inference", "panns-inference"),
+    ("torch", "torch"),
+    ("soxr", "soxr"),
+    ("scipy", "scipy"),
+]
+
+missing_packages = []
+for module_name, pip_name in REQUIRED_PACKAGES:
+    try:
+        __import__(module_name)
+    except ImportError:
+        missing_packages.append(pip_name)
+
+if missing_packages:
+    print("\n" + "="*60)
+    print("[ERRO] Dependências do Python ausentes / Missing Python dependencies!")
+    print("="*60)
+    print("As seguintes bibliotecas necessárias não estão instaladas:")
+    for pkg in missing_packages:
+        print(f"  - {pkg}")
+    print("\nPara corrigir, execute o arquivo 'setup.bat' na pasta do projeto.")
+    print("Please run 'setup.bat' in the project directory to install dependencies.")
+    print("="*60 + "\n")
+    sys.exit(1)
+
 import json
 import argparse
 import time
