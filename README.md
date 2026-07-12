@@ -76,9 +76,11 @@ When you launch `AiNOMEATOR.lua` in Reaper, you will be greeted by a simple, cle
 Expanding the settings panel allows you to customize the underlying AI models and performance options:
 
 <p align="center">
-  <img src="screenshots/advancedoptions.png" alt="AiNOMEATOR Advanced Options" width="280" />
+  <img src="screenshots/advancedoptions.png" alt="AiNOMEATOR Advanced Options" width="280" valign="top" />
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="screenshots/analysis.png" alt="AiNOMEATOR Analysis Status" width="280" valign="top" />
   <br />
-  <em>Advanced Options Panel</em>
+  <em>Left: Advanced Options Panel &nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp;&nbsp; Right: Analysis Status</em>
 </p>
 
 - **Analysis Backend**: start with **PANNs** as your baseline. It is generally the most fast starting point. You can also test Gemini or a hybrid solution if you want to explore another/better results.
