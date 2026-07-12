@@ -55,7 +55,7 @@ GEMINI_API_KEY=your_api_key_here
 ---
 
 ## Usage
-
+### Quick Execution
 When you launch `AiNOMEATOR.lua` in Reaper, you will be greeted by a simple, clean, and distraction-free interface:
 
 <p align="center">
@@ -64,7 +64,7 @@ When you launch `AiNOMEATOR.lua` in Reaper, you will be greeted by a simple, cle
   <em>Compact Mode</em>
 </p>
 
-### Quick Execution
+
 - **LETS NOMEATE!**: Click the main button to instantly analyze, name, and color all tracks using your current baseline options.
 - **EN / PT**: Toggle between English and Portuguese localization for the UI and generated names/colors.
 - **Advanced Options [+]**: Click to expand the window and configure advanced features.
