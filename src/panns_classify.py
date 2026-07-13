@@ -88,7 +88,6 @@ numero de faixas. As otimizacoes abaixo atacam exatamente isso:
 import os
 import sys
 import json
-import math
 import threading
 import numpy as np
 
@@ -164,6 +163,22 @@ _LABEL_MAP = {
     "String section":                 ("cordas", "Cordas", "Strings"),
     "Harp":                           ("cordas", "Harpa", "Harp"),
     "Mandolin":                       ("cordas", "Bandolim", "Mandolin"),
+
+    # FX / Ruido / Outros
+    "Vehicle":                        ("outro", "FX (Veículo)", "FX (Vehicle)"),
+    "Motor vehicle (road)":           ("outro", "FX (Veículo)", "FX (Vehicle)"),
+    "Car":                            ("outro", "FX (Carro)", "FX (Car)"),
+    "Engine":                         ("outro", "FX (Motor)", "FX (Engine)"),
+    "White noise":                    ("outro", "FX (Ruído branco)", "FX (White noise)"),
+    "Pink noise":                     ("outro", "FX (Ruído rosa)", "FX (Pink noise)"),
+    "Noise":                          ("outro", "FX (Ruído)", "FX (Noise)"),
+    "Wind":                           ("outro", "FX (Vento)", "FX (Wind)"),
+    "Rain":                           ("outro", "FX (Chuva)", "FX (Rain)"),
+    "Water":                          ("outro", "FX (Água)", "FX (Water)"),
+    "Explosion":                      ("outro", "FX (Explosão)", "FX (Explosion)"),
+    "Gunshot, gunfire":               ("outro", "FX (Tiro)", "FX (Gunshot)"),
+    "Bird":                           ("outro", "FX (Pássaro)", "FX (Bird)"),
+    "Animal":                         ("outro", "FX (Animal)", "FX (Animal)"),
 }
 
 
@@ -252,12 +267,8 @@ def _ensure_ready():
 
         # --- .env: le do disco UMA vez, nao a cada faixa ------------------
         try:
-            from dotenv import load_dotenv
-            load_dotenv()
-            _script_dir = os.path.dirname(os.path.abspath(__file__))
-            _parent_env = os.path.join(os.path.dirname(_script_dir), ".env")
-            if os.path.exists(_parent_env):
-                load_dotenv(_parent_env)
+            from config import load_env
+            load_env()
         except ImportError:
             pass
 
@@ -285,36 +296,48 @@ def _ensure_ready():
         device, backend = _detect_device()
         manual_forward = False
 
-        if backend == "directml":
-            # panns_inference so entende os strings 'cuda'/'cpu' -> criamos
-            # em CPU (rapido, so aloca os pesos) e movemos o nn.Module pra
-            # GPU manualmente. A partir daqui, NAO usamos mais at.inference()
-            # (ele faria .cuda() hardcoded e ignoraria nosso device DML) -
-            # usamos _forward_on_device() no lugar.
-            at = AudioTagging(checkpoint_path=None, device="cpu")
-            try:
-                at.model.to(device)
-                manual_forward = True
-            except Exception as e:
-                try:
-                    err_msg = str(e)
-                except UnicodeDecodeError:
-                    err_msg = repr(e)
-                print(f"  [PANNs] Nao foi possivel mover o modelo pra DirectML "
-                      f"({type(e).__name__}: {err_msg}). Usando CPU.", flush=True)
-                device, backend = "cpu", "cpu"
-        else:
-            try:
-                at = AudioTagging(checkpoint_path=None, device=device)
-            except Exception as e:
-                try:
-                    err_msg = str(e)
-                except UnicodeDecodeError:
-                    err_msg = repr(e)
-                print(f"  [PANNs] Nao foi possivel inicializar no device {backend} "
-                      f"({type(e).__name__}: {err_msg}). Caindo para CPU.", flush=True)
-                device, backend = "cpu", "cpu"
+        import sys
+        import io
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            if backend == "directml":
+                # DirectML bug workaround: panns_inference AudioTagging falha ao dar
+                # load() direto no device="directml". Entao inicializamos o AudioTagging
+                # em CPU (rapido, so aloca os pesos) e movemos o nn.Module pra
+                # GPU manualmente. A partir daqui, NAO usamos mais at.inference()
+                # (ele faria .cuda() hardcoded e ignoraria nosso device DML) -
+                # usamos _forward_on_device() no lugar.
                 at = AudioTagging(checkpoint_path=None, device="cpu")
+                try:
+                    at.model.to(device)
+                    manual_forward = True
+                except Exception as e:
+                    try:
+                        err_msg = str(e)
+                    except UnicodeDecodeError:
+                        err_msg = repr(e)
+                    sys.stdout = old_stdout
+                    print(f"  [PANNs] Nao foi possivel mover o modelo pra DirectML "
+                          f"({type(e).__name__}: {err_msg}). Usando CPU.", flush=True)
+                    sys.stdout = io.StringIO()
+                    device, backend = "cpu", "cpu"
+            else:
+                try:
+                    at = AudioTagging(checkpoint_path=None, device=device)
+                except Exception as e:
+                    try:
+                        err_msg = str(e)
+                    except UnicodeDecodeError:
+                        err_msg = repr(e)
+                    sys.stdout = old_stdout
+                    print(f"  [PANNs] Nao foi possivel inicializar no device {backend} "
+                          f"({type(e).__name__}: {err_msg}). Caindo para CPU.", flush=True)
+                    sys.stdout = io.StringIO()
+                    device, backend = "cpu", "cpu"
+                    at = AudioTagging(checkpoint_path=None, device="cpu")
+        finally:
+            sys.stdout = old_stdout
 
         print(f"  [PANNs] CNN14 carregado (device={backend}) (~300MB, so na primeira faixa)")
 
@@ -478,6 +501,19 @@ def _run_inference(audio_batch):
                     err_msg = str(e)
                 except UnicodeDecodeError:
                     err_msg = repr(e)
+                
+                # If it's an Out Of Memory error, raise it so the caller can reduce batch size
+                # Workaround for torch-directml in non-English Windows: the C++ driver raises 
+                # a localized OOM exception (e.g. "Memória esgotada") containing non-UTF8 chars.
+                # Pybind11 fails to decode this to Python and raises UnicodeDecodeError instead!
+                err_lower = err_msg.lower()
+                is_oom = ("memory" in err_lower or "allocate" in err_lower or "oom" in err_lower)
+                is_pybind_encoding_bug = isinstance(e, UnicodeDecodeError)
+                
+                if is_oom or is_pybind_encoding_bug:
+                    # Raise a clean RuntimeError so the caller knows it's an OOM and can reduce batch size
+                    raise RuntimeError("DirectML OOM (Memory error or Pybind11 decoding bug caught)")
+                
                 print(f"  [PANNs] DirectML falhou em runtime ({type(e).__name__}: {err_msg}). "
                       f"Desligando GPU e usando CPU pro resto da sessao "
                       f"(provavelmente alguma operacao do modelo nao suportada pelo torch-directml).", flush=True)
@@ -495,12 +531,16 @@ def _run_inference(audio_batch):
         return clipwise_output
 
 
-def classify_with_panns(audio_path, output_language="pt"):
+def classify_with_panns(audio_input, output_language="pt"):
     """
-    Executa o modelo PANNs (Cnn14) sobre um arquivo de audio e retorna um
-    dict no mesmo formato que os outros backends:
+    Executa o modelo PANNs (Cnn14) sobre um arquivo de audio ou um array NumPy
+    e retorna um dict no mesmo formato que os outros backends:
 
         {"category": ..., "instrument": ..., "confidence": ..., "notes": ...}
+
+    audio_input: str (caminho para arquivo) OU np.ndarray (audio ja carregado
+        em mono 32kHz float32 — evita releitura do disco quando o segmento
+        ja foi extraido em memoria por outro modulo).
     """
     try:
         _ensure_ready()
@@ -510,7 +550,10 @@ def classify_with_panns(audio_path, output_language="pt"):
         return {"error": f"falha ao inicializar PANNs: {type(e).__name__}: {e}"}
 
     try:
-        data = _load_audio_32k_mono(audio_path)
+        if isinstance(audio_input, np.ndarray):
+            data = np.ascontiguousarray(audio_input, dtype=np.float32)
+        else:
+            data = _load_audio_32k_mono(audio_input)
         audio = data[None, :]  # (batch_size=1, samples)
 
         clipwise_output = _run_inference(audio)
@@ -529,7 +572,7 @@ def classify_with_panns(audio_path, output_language="pt"):
         return {"error": f"{type(e).__name__}: {e}"}
 
 
-def classify_many_with_panns(audio_paths, output_language="pt"):
+def classify_many_with_panns(audio_inputs, output_language="pt"):
     """
     Versao em lote de classify_with_panns(): classifica VARIAS faixas em UM
     UNICO forward pass, em vez de uma chamada por faixa.
@@ -541,7 +584,10 @@ def classify_many_with_panns(audio_paths, output_language="pt"):
     Reaper (dezenas/centenas de stems), isso e a otimizacao de maior
     impacto depois de acertar o device.
 
-    Retorna uma lista de dicts, na MESMA ORDEM de `audio_paths`, no mesmo
+    audio_inputs: lista de str (caminhos) OU np.ndarray (arrays ja carregados
+        em mono 32kHz float32). Pode misturar os dois tipos na mesma lista.
+
+    Retorna uma lista de dicts, na MESMA ORDEM de `audio_inputs`, no mesmo
     formato de classify_with_panns(). Se uma faixa individual falhar ao
     carregar (arquivo corrompido etc.), o dict dela vem com "error" mas as
     outras faixas do lote nao sao afetadas.
@@ -550,46 +596,116 @@ def classify_many_with_panns(audio_paths, output_language="pt"):
         _ensure_ready()
     except ImportError:
         return [{"error": "panns_inference/torch nao instalado. Rode: pip install panns_inference torch"}
-                for _ in audio_paths]
+                for _ in audio_inputs]
     except Exception as e:
-        return [{"error": f"falha ao inicializar PANNs: {type(e).__name__}: {e}"} for _ in audio_paths]
+        return [{"error": f"falha ao inicializar PANNs: {type(e).__name__}: {e}"} for _ in audio_inputs]
 
-    if not audio_paths:
+    if not audio_inputs:
         return []
 
     arrays = []
     load_errors = {}
-    for i, path in enumerate(audio_paths):
+    for i, item in enumerate(audio_inputs):
         try:
-            arrays.append(_load_audio_32k_mono(path))
+            if isinstance(item, np.ndarray):
+                arrays.append(np.ascontiguousarray(item, dtype=np.float32))
+            else:
+                arrays.append(_load_audio_32k_mono(item))
         except Exception as e:
             arrays.append(None)
             load_errors[i] = f"{type(e).__name__}: {e}"
 
     valid_lens = [a.shape[0] for a in arrays if a is not None]
     if not valid_lens:
-        return [{"error": load_errors.get(i, "falha ao carregar audio")} for i in range(len(audio_paths))]
+        return [{"error": load_errors.get(i, "falha ao carregar audio")} for i in range(len(audio_inputs))]
 
-    max_len = max(valid_lens)
-    batch = np.zeros((len(arrays), max_len), dtype=np.float32)
+    MAX_SAMPLES = 32000 * 10  # 10 segundos por chunk
+    flat_chunks = []
+    chunk_to_track_idx = []
     valid_mask = [False] * len(arrays)
-    for i, a in enumerate(arrays):
-        if a is not None:
-            batch[i, :a.shape[0]] = a
-            valid_mask[i] = True
 
-    try:
-        clipwise_output = _run_inference(batch)
-    except Exception as e:
-        err = f"{type(e).__name__}: {e}"
-        return [{"error": load_errors.get(i, err)} for i in range(len(audio_paths))]
+    for i, a in enumerate(arrays):
+        if a is not None and a.shape[0] > 0:
+            valid_mask[i] = True
+            total_samples = a.shape[0]
+            num_chunks = int(np.ceil(total_samples / MAX_SAMPLES))
+            for c in range(num_chunks):
+                start = c * MAX_SAMPLES
+                end = min(total_samples, (c + 1) * MAX_SAMPLES)
+                chunk_data = a[start:end]
+                
+                # Ignora recortes completamente silenciosos (abaixo de -46dBFS).
+                # Como a faixa inteira ja sofreu peak normalization (max=1.0), 
+                # qualquer coisa abaixo de 0.005 e ruido de chao ou silencio digital.
+                # Se mandarmos zeros pro PANNs, ele tem um vies de classificar como "Speech/Vocal" com ~15% de confianca, 
+                # o que polui a nota final se a faixa tiver 3 minutos de silencio e 10s de piano!
+                if np.max(np.abs(chunk_data)) < 0.005:
+                    continue
+                
+                padded = np.zeros(MAX_SAMPLES, dtype=np.float32)
+                padded[:chunk_data.shape[0]] = chunk_data
+                flat_chunks.append(padded)
+                chunk_to_track_idx.append(i)
+
+    if not flat_chunks:
+        return [{"error": "falha ao carregar audio"} for _ in range(len(audio_inputs))]
+
+    batch = np.array(flat_chunks, dtype=np.float32)
+
+    clipwise_output_list = []
+    # Cap chunk_size at 32 (320s of audio) to prevent Windows TDR (GPU timeout)
+    # If we send 300 chunks at once, DirectML takes > 2 seconds and Windows kills the GPU driver!
+    chunk_size = min(batch.shape[0], 32)
+    i = 0
+    while i < batch.shape[0]:
+        chunk = batch[i : i + chunk_size]
+        try:
+            chunk_out = _run_inference(chunk)
+            clipwise_output_list.append(chunk_out)
+            i += chunk_size
+        except RuntimeError as e:
+            err_lower = str(e).lower()
+            if ("memory" in err_lower or "allocate" in err_lower or "oom" in err_lower) and chunk_size > 1:
+                chunk_size = chunk_size // 2
+                print(f"  [PANNs] DirectML/GPU OOM. Reduzindo lote para {chunk_size} recortes simultaneos...", flush=True)
+            elif ("memory" in err_lower or "allocate" in err_lower or "oom" in err_lower) and chunk_size == 1:
+                print("  [PANNs] DirectML sem memoria ate para 1 recorte (ou GPU travou). Caindo para CPU pro resto da sessao...", flush=True)
+                global _use_manual_forward, _dml_broken, _device_str, _device_backend, _audio_tagger
+                _dml_broken = True
+                try:
+                    _audio_tagger.model.to("cpu")
+                except Exception:
+                    pass
+                _device_str, _device_backend = "cpu", "cpu"
+                _use_manual_forward = False
+                # Nao incrementamos 'i', entao na proxima iteracao ele vai rodar o mesmo chunk, so que na CPU!
+            else:
+                err = f"{type(e).__name__}: {e}"
+                return [{"error": load_errors.get(idx, err)} for idx in range(len(audio_inputs))]
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+            return [{"error": load_errors.get(idx, err)} for idx in range(len(audio_inputs))]
+
+    clipwise_output = np.concatenate(clipwise_output_list, axis=0) if clipwise_output_list else np.empty((0, 527))
+
+    # Reagrupa os chunks calculados de volta para cada faixa (media dos scores)
+    track_outputs = {idx: [] for idx in range(len(audio_inputs))}
+    for c_idx, t_idx in enumerate(chunk_to_track_idx):
+        track_outputs[t_idx].append(clipwise_output[c_idx])
 
     results = []
-    for i in range(len(audio_paths)):
-        if not valid_mask[i]:
+    for i in range(len(audio_inputs)):
+        if not valid_mask[i] or len(track_outputs[i]) == 0:
             results.append({"error": load_errors.get(i, "falha ao carregar audio")})
             continue
-        category, instrument, confidence = _pick_label(clipwise_output[i], output_language)
+        # Usa Media Generalizada (L3-norm) em vez de np.mean ou np.max!
+        # O np.mean dilui o score de instrumentos esparsos (flauta toca 10s num arquivo de 3min).
+        # O np.max e muito sensivel a picos falsos (ruido num chunk quieto classificado como Violao com 80%).
+        # A norma L3 (p=3) penaliza valores baixos e recompensa valores altos, encontrando o balanco 
+        # perfeito entre "pico forte" e "consistencia ao longo da faixa".
+        chunk_scores_arr = np.array(track_outputs[i])
+        l3_scores = np.mean(chunk_scores_arr ** 3, axis=0) ** (1/3)
+        category, instrument, confidence = _pick_label(l3_scores, output_language)
         results.append({
             "category": category,
             "instrument": instrument,

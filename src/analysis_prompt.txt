@@ -17,5 +17,5 @@ formato de saída:
 {
   "instrument": "nome específico e detalhado do instrumento",
   "category": "uma das categorias permitidas",
-  "confidence":
+  "confidence": 0.95
 }

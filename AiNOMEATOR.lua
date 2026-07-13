@@ -33,6 +33,7 @@ local script_dir = script_path:match("^(.*[/\\])")
 local os_name = reaper.GetOS()
 local is_windows = os_name:find("Win") ~= nil
 local sep = is_windows and "\\" or "/"
+local ui_font = is_windows and "Segoe UI" or "Arial"
 
 local env_path = script_dir .. ".env"
 local config_path = script_dir .. "colors.ini"
@@ -65,190 +66,40 @@ local saved_delete_silent = reaper.GetExtState("AiNOMEATOR", "delete_silent")
 local delete_silent = (saved_delete_silent == "true")
 
 
-local strings = {
-  en = {
-    only_selected = "Only selected",
-    sort_tracks = "Sort tracks",
-    create_folders = "Intelligent folders",
-    delete_silent = "Delete absolute silence",
-    tip_create_folders = "Automatically groups tracks into instrument folders.",
-    tip_delete_silent = "Deletes tracks that contain only absolute silence.",
-    analysis_mode = "Analysis Mode:",
-    mode_fast = "Fast",
-    mode_detailed = "Detailed",
-    thread_label = "Parallel tracks (1-20):",
-    local_thread_label = "Local threads (1-16):",
-    prompt_label = "Color prompt (empty = use colors.ini):",
-    prompt_placeholder = "Ex: all in green, vintage autumn, cyberpunk neon",
-    api_label = "Gemini API Key:",
-    api_placeholder = "Paste your API key here (AIzaSy...)",
-    btn_show = "Show",
-    btn_hide = "Hide",
-    btn_save = "Save",
-    btn_analyze = "LETS NOMEATE!",
-    experimental_notice_1 = "this is an experimental project.",
-    experimental_notice_2 = "the AI will make mistakes.",
-    btn_close = "CLOSE",
-    btn_cancel = "CANCEL",
-    btn_show_advanced = "Advanced Options  [+]",
-    btn_hide_advanced = "Advanced Options  [-]",
-    tip_btn_show_advanced = "Toggle advanced settings like CPU threads, analysis backend, and custom color prompt.",
-    lbl_analyzing = "Analyzing tracks with AI...",
-    lbl_completed = "Analysis completed!",
-    lbl_error = "Error during processing!",
-    msg_no_audio = "No eligible audio tracks found.",
-    msg_summary = "%d track(s) (%d s/ audio)",
-    msg_done = "║  ✓ Done: %d applied  ✗ %d with error  ║",
-    msg_copied = "Logs copied to clipboard.",
-    msg_sent_console = "Logs sent to Reaper console.",
-    msg_empty_api = "Error: Gemini API Key cannot be blank.",
-    msg_sws_warning = "To paste with Ctrl+V, SWS Extension is required.",
-    opt_quality_high = "alta",
-    opt_quality_normal = "normal",
-    logs_title = "Logs",
-    btn_copy_logs = "Copy Logs",
-    msg_color_created = "⚙  Color file created: ",
-    msg_color_edit_hint = "   (You can edit this file to customize colors!)",
-    msg_color_loaded = "⚙  Color settings loaded from: ",
-    msg_venv_missing = "[WARNING] Virtual environment (venv) not detected. Using system global Python.",
-    msg_venv_hint = "        Make sure you have run setup or have the dependencies installed.",
-    msg_starting = "▶  Starting analysis of %d track(s) with %d thread(s)...",
-    msg_waiting = "   Please wait — progress appears below in real time.",
-    msg_applying = "◀  Analysis completed! Applying names and colors in Reaper...",
-    msg_api_error = "[ERROR] batch_rename.py did not generate the result file.",
-    msg_api_causes = "Possible causes:\n  - setup.bat has not been run in this folder\n  - GEMINI_API_KEY is not configured in .env\n  - Python was not found in PATH",
-    msg_api_causes_mb = "Failed to run AI. Possible causes:\n- setup.bat has not been run in this folder (venv/.env missing)\n- GEMINI_API_KEY not configured in .env\n- Python not found\n\nSee the Reaper console for details.",
-    general_label = "General Options:",
-    backend_label = "Analysis Backend:",
-    backend_gemini = "Gemini (maybe better for synths)",
-    backend_yamnet = "YamNet (local, no API key)",
-    backend_essentia = "Essentia (local, no API key)",
-    backend_panns = "PANNs (Recommended)",
-    backend_hybrid_heuristic = "Hybrid Heuristic",
-    backend_hybrid_chaining = "Hybrid Chaining (PANNs-oriented - Recommended)",
-    theme_label = "Color Palette / Theme:",
-    theme_default = "Default (Balanced)",
-    theme_green = "Forest Green",
-    theme_purple = "Deep Purple",
-    theme_blue = "Ocean Blue",
-    theme_red = "Crimson Red",
-    theme_orange = "Sunset Orange",
-    theme_yellow = "Golden Yellow",
-    theme_vintage = "Vintage Warm",
-    theme_custom = "Custom AI Prompt (Set below)",
-    theme_prompt_disabled = "[Change theme to 'Custom AI' to edit]",
-    tip_lang_en = "Switch interface language to English.",
-    tip_lang_pt = "Switch interface language to Portuguese.",
-    tip_only_selected = "Only analyze tracks that are currently selected in Reaper.",
-    tip_sort_tracks = "Automatically sort your tracks in the Reaper project by instrument name.",
-    tip_mode_fast = "Analyzes short 8s to 12s segments of the audio to speed up processing.",
-    tip_mode_detailed = "Analyzes the entire audio file or original source item for higher accuracy.",
-    tip_backend_panns = "Uses your local CPU. Extremely fast, very accurate. No API key needed.",
-    tip_backend_hybrid_chaining = "Runs PANNs first, then sends result to Gemini to review and polish details.",
-    tip_backend_gemini = "Good at identifying complex synth timbres, but requires an active API key.",
-    tip_backend_hybrid_heuristic = "Runs PANNs and Gemini concurrently and resolves conflicts with coded heuristics.",
-    tip_theme = "Choose a color palette theme for your tracks in Reaper.",
-    tip_colors_prompt = "Custom Prompt to override the color definitions. Leave empty to use default colors.ini.",
-    tip_api_key = "Enter your Google Gemini API Key here. Press Save to keep it.",
-    tip_threads_cpu = "Number of parallel requests for Gemini cloud API.",
-    tip_local_threads = "Number of CPU threads to use for local models.",
-    tip_btn_analyze = "Start the analysis and rename/recolor your tracks!",
-  },
-  pt = {
-    only_selected = "Apenas sel.",
-    sort_tracks = "Ordenar inst.",
-    create_folders = "Criar pastas",
-    delete_silent = "Apagar silêncio",
-    tip_create_folders = "Agrupa automaticamente as faixas em pastas de instrumentos.",
-    tip_delete_silent = "Apaga faixas que contêm apenas silêncio absoluto (pico zero).",
-    analysis_mode = "Modo de Análise:",
-    mode_fast = "Rápida",
-    mode_detailed = "Detalhada",
-    thread_label = "Faixas/CPU (1-20):",
-    local_thread_label = "Threads locais (1-16):",
-    prompt_label = "Prompt de cores (vazio = usar cores.ini):",
-    prompt_placeholder = "Ex: tudo em verde, vintage outono, cyberpunk neon",
-    api_label = "Chave API Gemini:",
-    api_placeholder = "Cole sua chave da API aqui (AIzaSy...)",
-    btn_show = "Mostrar",
-    btn_hide = "Ocultar",
-    btn_save = "Salvar",
-    btn_analyze = "VAMOS NOMEAR!",
-    experimental_notice_1 = "isso e um projeto experimental.",
-    experimental_notice_2 = "a ia VAI cometer erros.",
-    btn_close = "FECHAR",
-    btn_cancel = "CANCELAR",
-    btn_show_advanced = "Opções Avançadas  [+]",
-    btn_hide_advanced = "Opções Avançadas  [-]",
-    tip_btn_show_advanced = "Mostra ou oculta configurações avançadas como backend, threads de CPU e prompt de cores.",
-    lbl_analyzing = "Analisando faixas com IA...",
-    lbl_completed = "Analise concluida!",
-    lbl_error = "Erro no processamento!",
-    msg_no_audio = "Nenhuma faixa de áudio elegível.",
-    msg_summary = "%d faixas (%d s/ áudio)",
-    msg_done = "║  ✓ Concluido: %d aplicada(s)  ✗ %d com erro  ║",
-    msg_copied = "Os logs foram copiados para a area de transferencia.",
-    msg_sent_console = "Os logs foram enviados para o console do Reaper.",
-    msg_empty_api = "Erro: A Chave API do Gemini nao pode ficar em branco.",
-    msg_sws_warning = "Para colar com Ctrl+V, é necessária a extensão SWS Extension.",
-    opt_quality_high = "alta",
-    opt_quality_normal = "normal",
-    logs_title = "Logs",
-    btn_copy_logs = "Copiar Logs",
-    msg_color_created = "⚙  Arquivo de cores criado: ",
-    msg_color_edit_hint = "   (Voce pode editar este arquivo para personalizar as cores!)",
-    msg_color_loaded = "⚙  Configuracoes de cores carregadas de: ",
-    msg_venv_missing = "[AVISO] Ambiente virtual (venv) nao detectado. Usando python global do sistema.",
-    msg_venv_hint = "        Certifique-se de ter rodado o setup ou ter as dependencias instaladas.",
-    msg_starting = "▶  Iniciando analise de %d faixa(s) com %d thread(s)...",
-    msg_waiting = "   Aguarde — o progresso aparece abaixo em tempo real.",
-    msg_applying = "◀  Analise concluida! Aplicando nomes e cores no Reaper...",
-    msg_api_error = "[ERRO] batch_rename.py nao gerou o arquivo de resultado.",
-    msg_api_causes = "Possiveis causas:\n  - setup.bat ainda nao foi rodado nesta pasta (venv/.env faltando)\n  - GEMINI_API_KEY nao configurada no .env\n  - Python nao encontrado no PATH",
-    msg_api_causes_mb = "Falha ao rodar a IA. Possiveis causas:\n- setup.bat ainda nao foi rodado nesta pasta (venv/.env faltando)\n- GEMINI_API_KEY nao configurada no .env\n- Python nao encontrado\n\nVeja o console do Reaper para detalhes completos.",
-    general_label = "Opções Gerais:",
-    backend_label = "Backend de Analise:",
-    backend_gemini = "Gemini (talvez melhor para synths)",
-    backend_yamnet = "YamNet (local, sem chave de API)",
-    backend_essentia = "Essentia (local, sem chave de API)",
-    backend_panns = "PANNs (Recomendado)",
-    backend_hybrid_heuristic = "Híbrido Heurística",
-    backend_hybrid_chaining = "Híbrido Encadeado (Recomendado)",
-    theme_label = "Paleta de Cores / Tema:",
-    theme_default = "Padrão (Equilibrado)",
-    theme_green = "Verde Floresta",
-    theme_purple = "Roxo Profundo",
-    theme_blue = "Azul Oceano",
-    theme_red = "Vermelho Carmesim",
-    theme_orange = "Laranja Pôr do Sol",
-    theme_yellow = "Amarelo Ouro",
-    theme_vintage = "Vintage Quente",
-    theme_custom = "Custom IA Prompt (Defina abaixo)",
-    theme_prompt_disabled = "[Mude o tema para 'Custom IA' para editar]",
-    tip_lang_en = "Mudar o idioma da interface para Inglês.",
-    tip_lang_pt = "Mudar o idioma da interface para Português.",
-    tip_only_selected = "Analisa apenas as faixas que estiverem selecionadas no momento no Reaper.",
-    tip_sort_tracks = "Ordena as faixas no projeto do Reaper.",
-    tip_mode_fast = "Analisa trechos curtos de 8s a 12s do áudio para agilizar o processamento.",
-    tip_mode_detailed = "Analisa o arquivo inteiro ou item original completo para maior precisão.",
-    tip_backend_panns = "Executado localmente na CPU. Rápido e preciso. Não precisa de chave API.",
-    tip_backend_hybrid_chaining = "Roda o PANNs local primeiro e passa a previsão para o Gemini revisar e enriquecer os detalhes.",
-    tip_backend_gemini = "Bom para timbres complexos e synths, mas exige chave API configurada.",
-    tip_backend_hybrid_heuristic = "Roda PANNs e Gemini em paralelo e resolve conflitos usando regras heurísticas fixas.",
-    tip_theme = "Escolha a paleta de cores ou tema que será aplicada às faixas no Reaper.",
-    tip_colors_prompt = "Prompt customizado de IA para redefinir as cores das tracks.",
-    tip_api_key = "Insira sua Chave de API do Gemini aqui (começa com AIzaSy). Clique em Salvar para mantê-la no sistema.",
-    tip_threads_cpu = "Número de requisições simultâneas para a API do Gemini.",
-    tip_local_threads = "Número de threads de CPU para os modelos locais.",
-    tip_btn_analyze = "Iniciar análise para nomear e colorir suas faixas!",
-  }
-}
+local strings = dofile(script_dir .. "lua/i18n.lua")
+
+local T
+local function _update_T()
+  T = strings[lang] or strings["en"]
+end
+_update_T()
 
 local function t(key)
-  return strings[lang][key] or key
+  return (T and T[key]) or (strings["en"] and strings["en"][key]) or key
 end
  -- "config", "analyzing", "completed", "error"
-local gui_logs = {}
+local LOG_MAX = 500
+local _log_buf = {}
+local _log_head = 1  -- próxima posição de escrita (circular)
+local _log_count = 0
+
+local function push_log(line)
+  _log_buf[_log_head] = line
+  _log_head = (_log_head % LOG_MAX) + 1
+  if _log_count < LOG_MAX then _log_count = _log_count + 1 end
+end
+
+local function iter_logs()  -- iterador em ordem cronológica
+  local tail = (_log_head - _log_count - 1 + LOG_MAX) % LOG_MAX + 1
+  local i = 0
+  return function()
+    if i >= _log_count then return nil end
+    local idx = (tail + i - 1) % LOG_MAX + 1
+    i = i + 1
+    return _log_buf[idx]
+  end
+end
+
 local DEBUG = false
 local parse_log_progress
 local show_text_log = false
@@ -257,13 +108,10 @@ local cancel_path = ""
 local function log(msg)
   local msg_str = tostring(msg)
   for line in string.gmatch(msg_str .. "\n", "(.-)\n") do
-    table.insert(gui_logs, line)
+    push_log(line)
   end
   if parse_log_progress then
     parse_log_progress(msg_str)
-  end
-  while #gui_logs > 500 do
-    table.remove(gui_logs, 1)
   end
   if DEBUG then
     reaper.ShowConsoleMsg(msg_str .. "\n")
@@ -295,6 +143,18 @@ local function sanitize_shell_arg(s)
   -- Mantém apenas caracteres alfanuméricos, espaços, vírgulas, hifens, underlines e acentuação em português
   -- Removendo metacaracteres perigosos do terminal como &, |, ;, $, <, >, `, \, ", %, !, ^, etc.
   return s:gsub("[^%w%s%,%-_áàâãéèêíóòôõúùûçÁÀÂÃÉÈÊÍÓÒÔÕÚÙÛÇ]", "")
+end
+
+local function sanitize_numeric_input(value, max_val)
+  local digits = tostring(value or ""):gsub("%D", "")
+  if digits == "" then
+    return ""
+  end
+
+  local threads = tonumber(digits) or 1
+  if threads < 1 then threads = 1 end
+  if threads > max_val then threads = max_val end
+  return tostring(threads)
 end
 
 
@@ -1120,6 +980,12 @@ local function start_analysis()
   end
   mf:close()
 
+  local analysis_start_time = reaper.time_precise()
+  local function log_t(msg)
+    local elapsed = reaper.time_precise() - analysis_start_time
+    log(string.format("%s [%.2fs]", msg, elapsed))
+  end
+
   if DEBUG then
     reaper.ShowConsoleMsg("")  -- garante que o console abre
   end
@@ -1127,7 +993,7 @@ local function start_analysis()
   log("│ ainomeator by jasko                                                        │")
   log("╰──────────────────────────────────────────────────────────╯")
   log("")
-  log("[ setup ]")
+  log_t("[ setup ]")
   if not venv_exists then
     log(t("msg_venv_missing"))
     log(t("msg_venv_hint"))
@@ -1137,7 +1003,7 @@ local function start_analysis()
   if current_theme == "custom" and color_prompt ~= "" then
     profile_name = "colors_prompt.ini"
   end
-  log("› profile  : " .. profile_name)
+  log_t("› profile  : " .. profile_name)
   local backend_name = backend
   if backend == "panns" then
     backend_name = "panns (local/cnn14)"
@@ -1148,25 +1014,28 @@ local function start_analysis()
   elseif backend == "hybrid_chaining" then
     backend_name = "hybrid_chaining (PANNs + Gemini review)"
   end
-  log("› backend  : " .. backend_name)
+  log_t("› backend  : " .. backend_name)
   local device_str = "cpu (checkpoint loaded)"
   if backend == "gemini" then
     device_str = "cloud api"
   end
-  log("› device   : " .. device_str)
+  log_t("› device   : " .. device_str)
   local target_str = string.format("%d tracks | %d thread | %s mode", n_jobs, workers, (analysis_mode == "detailed" and "detailed" or "fast"))
-  log("› target   : " .. target_str)
+  log_t("› target   : " .. target_str)
 
   local local_threads = tonumber(inputs[3].val) or 1
+  
+  -- Calcula o tempo gasto ate o momento do disparo do script Python
+  local setup_offset = reaper.time_precise() - analysis_start_time
   local python_args = string.format(
-    '-u "%s" "%s" "%s" --workers %d --segment-seconds %.2f --done-flag "%s" --config-path "%s" --panns-threads %d',
-    batch_script, manifest_path, result_path, workers, segment_seconds, done_path, config_colors_file, local_threads
+    '-u "%s" "%s" "%s" --workers %d --segment-seconds %.2f --done-flag "%s" --config-path "%s" --panns-threads %d --start-offset %.4f',
+    batch_script, manifest_path, result_path, workers, segment_seconds, done_path, config_colors_file, local_threads, setup_offset
   )
 
   if analysis_mode == "detailed" then
-    python_args = python_args .. ' --quality ' .. t('opt_quality_high')
+    python_args = python_args .. ' --quality alta'
   else
-    python_args = python_args .. ' --quality ' .. t('opt_quality_normal')
+    python_args = python_args .. ' --quality normal'
   end
 
   python_args = python_args .. ' --output-language ' .. sanitize_shell_arg(lang)
@@ -1192,11 +1061,11 @@ local function start_analysis()
 
   if backend == "panns" or backend == "hybrid_heuristic" or backend == "hybrid_chaining" then
     if lang == "pt" then
-      log("  [!] Inicializando modelo PANNs (~300MB)...")
-      log("  [!] Pode demorar de 10 a 30 segundos na primeira execução...")
+      log_t("  [!] Inicializando modelo PANNs (~300MB)...")
+      log_t("  [!] Pode demorar de 10 a 30 segundos na primeira execução...")
     else
-      log("  [!] Initializing PANNs model (~300MB)...")
-      log("  [!] This might take 10 to 30 seconds on the first run...")
+      log_t("  [!] Initializing PANNs model (~300MB)...")
+      log_t("  [!] This might take 10 to 30 seconds on the first run...")
     end
   end
 
@@ -1397,38 +1266,63 @@ local function start_analysis()
 
     if create_folders then
       log("› grouping tracks into instrument folders...")
+      
+      -- Conta quantas tracks existem em cada categoria
+      local cat_counts = {}
+      for tr, cat in pairs(track_categories) do
+        if cat and cat ~= "" then
+          cat_counts[cat] = (cat_counts[cat] or 0) + 1
+        end
+      end
+
       local i = 0
       local current_folder = ""
+      local in_folder = false
+      
       while i < reaper.CountTracks(0) do
         local tr = reaper.GetTrack(0, i)
         local cat = track_categories[tr]
+        
         if cat and cat ~= "" and cat ~= current_folder and cat ~= "pastas" and cat ~= "efeitos" and cat ~= "outro" then
-          reaper.InsertTrackAtIndex(i, true)
-          local folder_tr = reaper.GetTrack(0, i)
-          local folder_name = cat:upper()
-          reaper.GetSetMediaTrackInfo_String(folder_tr, "P_NAME", folder_name, true)
-          reaper.SetMediaTrackInfo_Value(folder_tr, "I_FOLDERDEPTH", 1)
           
-          local col = config_colors["pastas"]
-          if col then
-            reaper.SetTrackColor(folder_tr, reaper.ColorToNative(col[1], col[2], col[3]) | 0x1000000)
+          -- Fecha a pasta anterior se estavamos dentro de uma
+          if in_folder and i > 0 then
+            local last_tr = reaper.GetTrack(0, i - 1)
+            local current_depth = reaper.GetMediaTrackInfo_Value(last_tr, "I_FOLDERDEPTH")
+            reaper.SetMediaTrackInfo_Value(last_tr, "I_FOLDERDEPTH", current_depth - 1)
+            in_folder = false
           end
           
           current_folder = cat
           
-          if i > 0 then
-            local last_tr = reaper.GetTrack(0, i - 1)
-            local current_depth = reaper.GetMediaTrackInfo_Value(last_tr, "I_FOLDERDEPTH")
-            reaper.SetMediaTrackInfo_Value(last_tr, "I_FOLDERDEPTH", current_depth - 1)
+          -- Cria nova pasta apenas se houver 2 ou mais tracks
+          if cat_counts[cat] and cat_counts[cat] >= 2 then
+            reaper.InsertTrackAtIndex(i, true)
+            local folder_tr = reaper.GetTrack(0, i)
+            local disp_name = cat_names[cat] and cat_names[cat][lang] or cat
+            local folder_name = disp_name:upper()
+            reaper.GetSetMediaTrackInfo_String(folder_tr, "P_NAME", folder_name, true)
+            reaper.SetMediaTrackInfo_Value(folder_tr, "I_FOLDERDEPTH", 1)
+            
+            local col = config_colors["pastas"]
+            if col then
+              reaper.SetTrackColor(folder_tr, reaper.ColorToNative(col[1], col[2], col[3]) | 0x1000000)
+            end
+            
+            in_folder = true
           end
         end
         i = i + 1
       end
-      local final_total = reaper.CountTracks(0)
-      if final_total > 0 and current_folder ~= "" then
-        local last_tr = reaper.GetTrack(0, final_total - 1)
-        local current_depth = reaper.GetMediaTrackInfo_Value(last_tr, "I_FOLDERDEPTH")
-        reaper.SetMediaTrackInfo_Value(last_tr, "I_FOLDERDEPTH", current_depth - 1)
+      
+      -- Fecha a ultima pasta se ainda estiver aberta no final do projeto
+      if in_folder then
+        local final_total = reaper.CountTracks(0)
+        if final_total > 0 then
+          local last_tr = reaper.GetTrack(0, final_total - 1)
+          local current_depth = reaper.GetMediaTrackInfo_Value(last_tr, "I_FOLDERDEPTH")
+          reaper.SetMediaTrackInfo_Value(last_tr, "I_FOLDERDEPTH", current_depth - 1)
+        end
       end
     end
 
@@ -1476,51 +1370,57 @@ local function start_analysis()
 
   end
 
+  local _last_poll_time = 0
   poll = function()
     if not script_running then
       return
     end
 
-    local current_size = file_size(log_path)
-    if current_size > log_read_pos then
-      local lf = io.open(log_path, "rb")
-      if lf then
-        lf:seek("set", log_read_pos)
-        local new_content = lf:read("*a")
-        lf:close()
-        log_read_pos = current_size
-        if new_content and new_content ~= "" then
-          new_content = new_content:gsub("\r\n", "\n"):gsub("\r", "\n")
-          log(new_content)
+    local now = reaper.time_precise()
+    if now - _last_poll_time >= 0.25 then
+      _last_poll_time = now
+
+      local current_size = file_size(log_path)
+      if current_size > log_read_pos then
+        local lf = io.open(log_path, "rb")
+        if lf then
+          lf:seek("set", log_read_pos)
+          local new_content = lf:read("*a")
+          lf:close()
+          log_read_pos = current_size
+          if new_content and new_content ~= "" then
+            new_content = new_content:gsub("\r\n", "\n"):gsub("\r", "\n")
+            log(new_content)
+          end
         end
       end
-    end
 
-    if file_exists(done_path) then
-      local lf = io.open(log_path, "rb")
-      if lf then
-        lf:seek("set", log_read_pos)
-        local tail = lf:read("*a")
-        lf:close()
-        if tail and tail ~= "" then
-          log(tail:gsub("\r\n", "\n"):gsub("\r", "\n"))
+      if file_exists(done_path) then
+        local lf = io.open(log_path, "rb")
+        if lf then
+          lf:seek("set", log_read_pos)
+          local tail = lf:read("*a")
+          lf:close()
+          if tail and tail ~= "" then
+            log(tail:gsub("\r\n", "\n"):gsub("\r", "\n"))
+          end
         end
+        apply_results()
+        gui_state = "completed"
+        return
       end
-      apply_results()
-      gui_state = "completed"
-      return
-    end
 
-    if reaper.time_precise() - poll_start > TIMEOUT_SEC then
-      local err_msg = string.format("\n[TIMEOUT] Processo nao concluiu em %ds. Verifique o log em:\n  %s",
-        TIMEOUT_SEC, log_path)
-      log(err_msg)
-      gui_state = "error"
-      reaper.MB(
-        string.format("Timeout: o processo demorou mais de %d segundos.\n\nVerifique o log completo em:\n%s",
-          TIMEOUT_SEC, log_path),
-        "AiNOMEATOR", 0)
-      return
+      if reaper.time_precise() - poll_start > TIMEOUT_SEC then
+        local err_msg = string.format("\n[TIMEOUT] Processo nao concluiu em %ds. Verifique o log em:\n  %s",
+          TIMEOUT_SEC, log_path)
+        log(err_msg)
+        gui_state = "error"
+        reaper.MB(
+          string.format("Timeout: o processo demorou mais de %d segundos.\n\nVerifique o log completo em:\n%s",
+            TIMEOUT_SEC, log_path),
+          "AiNOMEATOR", 0)
+        return
+      end
     end
 
     reaper.defer(poll)
@@ -1605,7 +1505,7 @@ local theme_options = {
 
 local function open_url(url)
   local os_name = reaper.GetOS()
-  if os_name:find("Win") then
+  if is_windows then
     os.execute(string.format('start "" "%s"', url))
   elseif os_name:find("OSX") or os_name:find("mac") then
     os.execute(string.format('open "%s"', url))
@@ -1638,13 +1538,12 @@ local function load_logo()
   end
 end
 
-only_selected = false
 sort_tracks = (saved_sort_tracks == "true")
 analysis_mode = "detailed"
 inputs = {
-  { label = t("thread_label"), val = saved_panns_workers, placeholder = "1-20", is_numeric = true, limit = 2, x = -1000, y = -1000, w = 1, h = 1 },
+  { label = t("thread_label"), val = saved_panns_workers, placeholder = "1-20", is_numeric = true, limit = 2, max_val = 20, x = -1000, y = -1000, w = 1, h = 1 },
   { label = t("prompt_label"), val = "", placeholder = t("prompt_placeholder"), is_numeric = false, limit = 100, x = 30, y = 595, w = 260, h = 30 },
-  { label = t("local_thread_label"), val = saved_panns_threads, placeholder = "1-16", is_numeric = true, limit = 2, x = 30, y = 445, w = 260, h = 30 }
+  { label = t("local_thread_label"), val = saved_panns_threads, placeholder = "1-16", is_numeric = true, limit = 2, max_val = 16, x = 30, y = 445, w = 260, h = 30 }
 }
 
 local function refresh_language_labels()
@@ -1660,6 +1559,7 @@ local function set_language(new_lang)
   end
 
   lang = new_lang
+  _update_T()
   reaper.SetExtState("AiNOMEATOR", "language", new_lang, true)
   refresh_language_labels()
   return true
@@ -1667,35 +1567,12 @@ end
 
 refresh_language_labels()
 
-local function sanitize_thread_input(value)
-  local digits = tostring(value or ""):gsub("%D", "")
-  if digits == "" then
-    return ""
-  end
-
-  local threads = tonumber(digits) or 1
-  if threads < 1 then threads = 1 end
-  if threads > 20 then threads = 20 end
-  return tostring(threads)
-end
-
-local function sanitize_local_thread_input(value)
-  local digits = tostring(value or ""):gsub("%D", "")
-  if digits == "" then
-    return ""
-  end
-
-  local threads = tonumber(digits) or 1
-  if threads < 1 then threads = 1 end
-  if threads > 16 then threads = 16 end
-  return tostring(threads)
-end
-
 local focused_input = nil
 local last_mouse_cap = 0
 
 local function draw_logs(x, y, w, h)
-  gfx.setfont(1, "Segoe UI", 11)
+  local font_size = 11
+  gfx.setfont(1, ui_font, font_size)
   gfx.r, gfx.g, gfx.b = 0.8, 0.8, 0.8
   
   local line_height = 16
@@ -1703,7 +1580,7 @@ local function draw_logs(x, y, w, h)
   
   -- Prepara as linhas formatadas (com quebra se passarem de w)
   local formatted_lines = {}
-  for _, raw_line in ipairs(gui_logs) do
+  for raw_line in iter_logs() do
     local line = raw_line:gsub("\t", "    ")
     local line_w, _ = gfx.measurestr(line)
     if line_w <= w then
@@ -1759,7 +1636,7 @@ local function draw_copy_button()
   gfx.r, gfx.g, gfx.b = 0.27, 0.27, 0.27
   gfx.rect(btn.x, btn.y, btn.w, btn.h, 0)
   gfx.r, gfx.g, gfx.b = 0.8, 0.8, 0.8
-  gfx.setfont(1, "Segoe UI", 10)
+  gfx.setfont(1, ui_font, 10)
   local c_text = t("btn_copy_logs")
   local c_tw, c_th = gfx.measurestr(c_text)
   gfx.x = btn.x + (btn.w - c_tw)/2
@@ -1780,7 +1657,7 @@ local function draw_toggle_view_button()
   gfx.rect(btn.x, btn.y, btn.w, btn.h, 0)
   
   gfx.r, gfx.g, gfx.b = 0.8, 0.8, 0.8
-  gfx.setfont(1, "Segoe UI", 10)
+  gfx.setfont(1, ui_font, 10)
   local text = show_text_log and "VISUAL" or "LOG"
   local tw, th = gfx.measurestr(text)
   gfx.x = btn.x + (btn.w - tw) / 2
@@ -1888,7 +1765,7 @@ local function draw_visualizer(box_x, box_y, box_w, box_h)
   
   local num_tracks = #display_tracks
   if num_tracks == 0 then
-    gfx.setfont(1, "Segoe UI", 12)
+    gfx.setfont(1, ui_font, 12)
     gfx.r, gfx.g, gfx.b = 0.5, 0.5, 0.5
     local text = t("msg_no_audio") or "Sem faixas para analisar"
     local tw, th = gfx.measurestr(text)
@@ -1933,7 +1810,7 @@ local function draw_visualizer(box_x, box_y, box_w, box_h)
     gfx.rect(rx, ty, tcp_w, track_h, 0)
     
     if track_h >= 14 then
-      gfx.setfont(1, "Segoe UI", 10)
+      gfx.setfont(1, ui_font, 10)
       gfx.r, gfx.g, gfx.b = 0.8, 0.8, 0.8
       gfx.x = rx + 6
       gfx.y = ty + (track_h - 12) / 2
@@ -2000,7 +1877,7 @@ local function draw_visualizer(box_x, box_y, box_w, box_h)
     
     -- Instrument Name overlay
     if info.status == "ok" and track_h >= 14 then
-      gfx.setfont(1, "Segoe UI", 10, 98)
+      gfx.setfont(1, ui_font, 10)
       gfx.r, gfx.g, gfx.b = 1.0, 1.0, 1.0
       
       local inst_text = info.instrument or ""
@@ -2011,7 +1888,7 @@ local function draw_visualizer(box_x, box_y, box_w, box_h)
         gfx.drawstr(inst_text)
       end
     elseif is_analyzing and track_h >= 14 then
-      gfx.setfont(1, "Segoe UI", 10)
+      gfx.setfont(1, ui_font, 10)
       gfx.r, gfx.g, gfx.b = 0.8, 0.8, 0.8
       local scan_text = "scanning..."
       local sw, sh = gfx.measurestr(scan_text)
@@ -2051,7 +1928,7 @@ local function draw_gui()
     local target_x = (gfx.w - target_w) / 2
     gfx.blit(buf, 1, 0, 0, 0, src_w, src_h, target_x, 15, target_w, target_h)
   else
-    gfx.setfont(1, "Segoe UI", 18, 98) -- Bold
+    gfx.setfont(1, ui_font, 18) -- Bold
     gfx.r, gfx.g, gfx.b = 0.53, 0.0, 0.08
     gfx.x, gfx.y = 30, 30
     gfx.drawstr("AiNOMEATOR")
@@ -2059,7 +1936,7 @@ local function draw_gui()
 
   -- Linha divisoria (oculta no modo compacto — o logo maior já ocupa esse espaço)
   if not is_compact_view then
-    gfx.setfont(1, "Segoe UI", 12)
+    gfx.setfont(1, ui_font, 12)
     gfx.r, gfx.g, gfx.b = 0.25, 0.25, 0.25
     gfx.line(30, 100, 290, 100)
   end
@@ -2071,7 +1948,7 @@ local function draw_gui()
     if in_rect(en.x, en.y, en.w, en.h) then tooltip_to_draw = t("tip_lang_en") end
     if in_rect(pt.x, pt.y, pt.w, pt.h) then tooltip_to_draw = t("tip_lang_pt") end
 
-    gfx.setfont(1, "Segoe UI", 10)
+    gfx.setfont(1, ui_font, 10)
     gfx.r, gfx.g, gfx.b = 0.78, 0.78, 0.78
     gfx.x, gfx.y = en.radio_x + 12, en.radio_y - 7
     gfx.drawstr("EN")
@@ -2108,7 +1985,7 @@ local function draw_gui()
     
     local toggle_label = show_advanced and t("btn_hide_advanced") or t("btn_show_advanced")
     gfx.r, gfx.g, gfx.b = 0.85, 0.85, 0.85
-    gfx.setfont(1, "Segoe UI", 10, 98) -- Bold
+    gfx.setfont(1, ui_font, 10) -- Bold
     local t_w, t_h = gfx.measurestr(toggle_label)
     gfx.x = toggle.x + (toggle.w - t_w)/2
     gfx.y = toggle.y + (toggle.h - t_h)/2
@@ -2116,11 +1993,11 @@ local function draw_gui()
 
     if show_advanced then
       -- Opções Gerais Label
-      gfx.setfont(1, "Segoe UI", 11, 98) -- Bold
+      gfx.setfont(1, ui_font, 11) -- Bold
       gfx.r, gfx.g, gfx.b = 0.65, 0.65, 0.65
       gfx.x, gfx.y = 30, 140
       gfx.drawstr(t("general_label"))
-      gfx.setfont(1, "Segoe UI", 11)
+      gfx.setfont(1, ui_font, 11)
 
       -- Checkbox "Apenas faixas selecionadas"
       local opt = layout.only_selected
@@ -2191,11 +2068,11 @@ local function draw_gui()
       gfx.line(30, 215, 290, 215)
 
       -- Modo de Análise Label
-      gfx.setfont(1, "Segoe UI", 11, 98) -- Bold
+      gfx.setfont(1, ui_font, 11) -- Bold
       gfx.r, gfx.g, gfx.b = 0.65, 0.65, 0.65
       gfx.x, gfx.y = 30, 225
       gfx.drawstr(t("analysis_mode"))
-      gfx.setfont(1, "Segoe UI", 11)
+      gfx.setfont(1, ui_font, 11)
 
       -- Radio 1: "Análise rápida de pequena amostra"
       local r1 = layout.mode_fast
@@ -2232,11 +2109,11 @@ local function draw_gui()
       gfx.line(30, 270, 290, 270)
 
       -- Backend de Análise Label
-      gfx.setfont(1, "Segoe UI", 11, 98) -- Bold
+      gfx.setfont(1, ui_font, 11) -- Bold
       gfx.r, gfx.g, gfx.b = 0.65, 0.65, 0.65
       gfx.x, gfx.y = 30, layout.backend_label_y
       gfx.drawstr(t("backend_label"))
-      gfx.setfont(1, "Segoe UI", 11)
+      gfx.setfont(1, ui_font, 11)
 
       local cb_x, cb_size = layout.backend_cb_x, layout.backend_cb_size
       for i, opt in ipairs(backend_options) do
@@ -2265,7 +2142,7 @@ local function draw_gui()
       gfx.line(30, 485, 290, 485)
 
       -- Theme Selector Label
-      gfx.setfont(1, "Segoe UI", 10)
+      gfx.setfont(1, ui_font, 10)
       gfx.r, gfx.g, gfx.b = 0.65, 0.65, 0.65
       gfx.x, gfx.y = layout.theme_selector.x, layout.theme_selector.y - 20
       gfx.drawstr(t("theme_label"))
@@ -2285,7 +2162,7 @@ local function draw_gui()
 
       -- Theme Selector Text
       gfx.r, gfx.g, gfx.b = 1.0, 1.0, 1.0
-      gfx.setfont(1, "Segoe UI", 10, 98) -- Bold
+      gfx.setfont(1, ui_font, 10) -- Bold
       local theme_text = t("theme_" .. current_theme)
       local tstw, tsth = gfx.measurestr(theme_text)
       gfx.x = ts.x + (ts.w - tstw)/2
@@ -2381,7 +2258,7 @@ local function draw_gui()
 
     -- Info de resumo econômico/faixas dinâmico
     local n_jobs, n_skipped = update_analysis_summary_cached()
-    gfx.setfont(1, "Segoe UI", 11)
+    gfx.setfont(1, ui_font, 11)
     local summary_y1 = show_advanced and 635 or 150
     local summary_y2 = show_advanced and 647 or 162
     if n_jobs == 0 then
@@ -2408,14 +2285,14 @@ local function draw_gui()
     end
     gfx.rect(30, btn_y, btn_w, btn_h, 1)
     gfx.r, gfx.g, gfx.b = 1.0, 1.0, 1.0
-    gfx.setfont(1, "Segoe UI", 12, 98) -- Bold
+    gfx.setfont(1, ui_font, 12) -- Bold
     local tw, th = gfx.measurestr(t("btn_analyze"))
     gfx.x = 30 + (btn_w - tw)/2
     gfx.y = btn_y + (btn_h - th)/2
     gfx.drawstr(t("btn_analyze"))
 
     -- Aviso experimental
-    gfx.setfont(1, "Segoe UI", 11)
+    gfx.setfont(1, ui_font, 11)
     gfx.r, gfx.g, gfx.b = 0.33, 0.33, 0.33
     local note1 = t("experimental_notice_1")
     local note2 = t("experimental_notice_2")
@@ -2431,11 +2308,11 @@ local function draw_gui()
     gfx.drawstr(note2)
 
     -- Creditos visiveis
-    gfx.setfont(1, "Segoe UI", 10)
+    gfx.setfont(1, ui_font, 10)
     local credit_text = "by jasko"
     local cr_w, cr_h = gfx.measurestr(credit_text)
     local cr_x = (gfx.w - cr_w) / 2
-    local cr_y = show_advanced and 720 or COMPACT_CREDITS_Y
+    local cr_y = show_advanced and 760 or COMPACT_CREDITS_Y
     gfx.r, gfx.g, gfx.b = 1.0, 1.0, 1.0
     gfx.x = cr_x
     gfx.y = cr_y
@@ -2461,7 +2338,7 @@ local function draw_gui()
 
   elseif gui_state == "analyzing" then
     -- Subtitulo
-    gfx.setfont(1, "Segoe UI", 12)
+    gfx.setfont(1, ui_font, 12)
     gfx.r, gfx.g, gfx.b = 0.85, 0.85, 0.85
     gfx.x, gfx.y = 30, 110
     gfx.drawstr(t("lbl_analyzing"))
@@ -2496,7 +2373,7 @@ local function draw_gui()
     end
     gfx.rect(btn.x, btn.y, btn.w, btn.h, 1)
     gfx.r, gfx.g, gfx.b = 1.0, 1.0, 1.0
-    gfx.setfont(1, "Segoe UI", 12, 98) -- Bold
+    gfx.setfont(1, ui_font, 12) -- Bold
     local tw, th = gfx.measurestr(t("btn_cancel"))
     gfx.x = btn.x + (btn.w - tw)/2
     gfx.y = btn.y + (btn.h - th)/2
@@ -2504,7 +2381,7 @@ local function draw_gui()
 
   elseif gui_state == "completed" or gui_state == "error" then
     -- Subtitulo de Sucesso ou Erro
-    gfx.setfont(1, "Segoe UI", 13, 98) -- Bold
+    gfx.setfont(1, ui_font, 13) -- Bold
     gfx.x, gfx.y = 30, 110
     if gui_state == "completed" then
       gfx.r, gfx.g, gfx.b = 0.3, 0.8, 0.3 -- Verde
@@ -2539,7 +2416,7 @@ local function draw_gui()
     end
     gfx.rect(btn.x, btn.y, btn.w, btn.h, 1)
     gfx.r, gfx.g, gfx.b = 1.0, 1.0, 1.0
-    gfx.setfont(1, "Segoe UI", 12, 98) -- Bold
+    gfx.setfont(1, ui_font, 12) -- Bold
     local tw, th = gfx.measurestr(t("btn_close"))
     gfx.x = btn.x + (btn.w - tw)/2
     gfx.y = btn.y + (btn.h - th)/2
@@ -2547,7 +2424,7 @@ local function draw_gui()
   end
 
   if tooltip_to_draw then
-    gfx.setfont(1, "Segoe UI", 10)
+    gfx.setfont(1, ui_font, 10)
     local t_w, t_h = gfx.measurestr(tooltip_to_draw)
     local tx = lock_tx
     local ty = lock_ty
@@ -2717,7 +2594,7 @@ local function update_gui()
       end
 
       -- Clique nos creditos "by jasko"
-      gfx.setfont(1, "Segoe UI", 10)
+      gfx.setfont(1, ui_font, 10)
       local cr_w, cr_h = gfx.measurestr("by jasko")
       local cr_x = (gfx.w - cr_w) / 2
       local cr_y = show_advanced and 745 or COMPACT_CREDITS_Y
@@ -2737,11 +2614,14 @@ local function update_gui()
       -- Clique no botao de copiar logs
       local btn = layout.copy_logs
       if in_rect(btn.x, btn.y, btn.w, btn.h) then
+        local logs_arr = {}
+        for l in iter_logs() do table.insert(logs_arr, l) end
+        local logs_str = table.concat(logs_arr, "\n")
         if reaper.CF_SetClipboard then
-          reaper.CF_SetClipboard(table.concat(gui_logs, "\n"))
+          reaper.CF_SetClipboard(logs_str)
           reaper.MB(t("msg_copied"), "AiNOMEATOR", 0)
         else
-          reaper.ShowConsoleMsg(table.concat(gui_logs, "\n") .. "\n")
+          reaper.ShowConsoleMsg(logs_str .. "\n")
           reaper.MB(t("msg_sent_console"), "AiNOMEATOR", 0)
         end
       end
@@ -2804,11 +2684,11 @@ local function update_gui()
         if clip and clip ~= "" then
           clip = clip:gsub("[%r%n\t]", "")
           if inp.is_numeric then
-            clip = sanitize_thread_input(clip)
+            clip = sanitize_numeric_input(clip, inp.max_val or 99)
           end
           inp.val = inp.val .. clip
           if inp.is_numeric then
-            inp.val = sanitize_thread_input(inp.val)
+            inp.val = sanitize_numeric_input(inp.val, inp.max_val or 99)
           elseif #inp.val > inp.limit then
             inp.val = inp.val:sub(1, inp.limit)
           end
@@ -2822,7 +2702,7 @@ local function update_gui()
       if inp.is_numeric then
         if new_char:match("%d") and #inp.val < inp.limit then
           inp.val = inp.val .. new_char
-          inp.val = sanitize_thread_input(inp.val)
+          inp.val = sanitize_numeric_input(inp.val, inp.max_val or 99)
         end
       else
         if #inp.val < inp.limit then
@@ -2879,7 +2759,7 @@ local function run_gui_loop()
     
     only_selected = (only_selected == true)
 
-    workers = tonumber(sanitize_thread_input(inputs[1].val)) or 1
+    workers = tonumber(sanitize_numeric_input(inputs[1].val, 20)) or 1
     if workers < 1 then workers = 1
     elseif workers > 20 then workers = 20 end
     inputs[1].val = tostring(workers)
@@ -2887,7 +2767,7 @@ local function run_gui_loop()
       reaper.SetExtState("AiNOMEATOR", "panns_workers", inputs[1].val, true)
     end
 
-    local local_threads = tonumber(sanitize_local_thread_input(inputs[3].val)) or 1
+    local local_threads = tonumber(sanitize_numeric_input(inputs[3].val, 16)) or 1
     if local_threads < 1 then local_threads = 1
     elseif local_threads > 16 then local_threads = 16 end
     inputs[3].val = tostring(local_threads)
