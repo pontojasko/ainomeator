@@ -1397,51 +1397,33 @@ local function start_analysis()
 
     if create_folders then
       log("› grouping tracks into instrument folders...")
-      
-      -- Contagem de faixas por categoria para criar pastas apenas se houver mais de 1 instrumento
-      local category_counts = {}
-      for tr, cat in pairs(track_categories) do
-        if cat and cat ~= "" then
-          category_counts[cat] = (category_counts[cat] or 0) + 1
-        end
-      end
-
       local i = 0
       local current_folder = ""
       while i < reaper.CountTracks(0) do
         local tr = reaper.GetTrack(0, i)
-        local cat = track_categories[tr] or ""
-        
-        if cat ~= current_folder then
-          -- Se estava em uma pasta, fecha
-          if current_folder ~= "" then
-            if i > 0 then
-              local last_tr = reaper.GetTrack(0, i - 1)
-              local current_depth = reaper.GetMediaTrackInfo_Value(last_tr, "I_FOLDERDEPTH")
-              reaper.SetMediaTrackInfo_Value(last_tr, "I_FOLDERDEPTH", current_depth - 1)
-            end
-            current_folder = ""
+        local cat = track_categories[tr]
+        if cat and cat ~= "" and cat ~= current_folder and cat ~= "pastas" and cat ~= "efeitos" and cat ~= "outro" then
+          reaper.InsertTrackAtIndex(i, true)
+          local folder_tr = reaper.GetTrack(0, i)
+          local folder_name = cat:upper()
+          reaper.GetSetMediaTrackInfo_String(folder_tr, "P_NAME", folder_name, true)
+          reaper.SetMediaTrackInfo_Value(folder_tr, "I_FOLDERDEPTH", 1)
+          
+          local col = config_colors["pastas"]
+          if col then
+            reaper.SetTrackColor(folder_tr, reaper.ColorToNative(col[1], col[2], col[3]) | 0x1000000)
           end
           
-          -- Cria nova pasta apenas se a categoria tiver mais de 1 faixa
-          if cat ~= "" and cat ~= "pastas" and cat ~= "efeitos" and cat ~= "outro" and (category_counts[cat] or 0) > 1 then
-            reaper.InsertTrackAtIndex(i, true)
-            local folder_tr = reaper.GetTrack(0, i)
-            local folder_name = cat:upper()
-            reaper.GetSetMediaTrackInfo_String(folder_tr, "P_NAME", folder_name, true)
-            reaper.SetMediaTrackInfo_Value(folder_tr, "I_FOLDERDEPTH", 1)
-            
-            local col = config_colors["pastas"]
-            if col then
-              reaper.SetTrackColor(folder_tr, reaper.ColorToNative(col[1], col[2], col[3]) | 0x1000000)
-            end
-            
-            current_folder = cat
+          current_folder = cat
+          
+          if i > 0 then
+            local last_tr = reaper.GetTrack(0, i - 1)
+            local current_depth = reaper.GetMediaTrackInfo_Value(last_tr, "I_FOLDERDEPTH")
+            reaper.SetMediaTrackInfo_Value(last_tr, "I_FOLDERDEPTH", current_depth - 1)
           end
         end
         i = i + 1
       end
-      
       local final_total = reaper.CountTracks(0)
       if final_total > 0 and current_folder ~= "" then
         local last_tr = reaper.GetTrack(0, final_total - 1)
@@ -2453,7 +2435,7 @@ local function draw_gui()
     local credit_text = "by jasko"
     local cr_w, cr_h = gfx.measurestr(credit_text)
     local cr_x = (gfx.w - cr_w) / 2
-    local cr_y = show_advanced and 745 or COMPACT_CREDITS_Y
+    local cr_y = show_advanced and 720 or COMPACT_CREDITS_Y
     gfx.r, gfx.g, gfx.b = 1.0, 1.0, 1.0
     gfx.x = cr_x
     gfx.y = cr_y
