@@ -19,38 +19,6 @@ Requisitos:
 
 import sys
 import os
-
-# --- Verify dependencies ---
-REQUIRED_PACKAGES = [
-    ("dotenv", "python-dotenv"),
-    ("google.genai", "google-genai"),
-    ("numpy", "numpy"),
-    ("soundfile", "soundfile"),
-    ("panns_inference", "panns-inference"),
-    ("torch", "torch"),
-    ("soxr", "soxr"),
-    ("scipy", "scipy"),
-]
-
-missing_packages = []
-for module_name, pip_name in REQUIRED_PACKAGES:
-    try:
-        __import__(module_name)
-    except ImportError:
-        missing_packages.append(pip_name)
-
-if missing_packages:
-    print("\n" + "="*60)
-    print("[ERRO] Dependências do Python ausentes / Missing Python dependencies!")
-    print("="*60)
-    print("As seguintes bibliotecas necessárias não estão instaladas:")
-    for pkg in missing_packages:
-        print(f"  - {pkg}")
-    print("\nPara corrigir, execute o arquivo 'setup.bat' na pasta do projeto.")
-    print("Please run 'setup.bat' in the project directory to install dependencies.")
-    print("="*60 + "\n")
-    sys.exit(1)
-
 import json
 import argparse
 import time
@@ -62,33 +30,39 @@ from google.genai import types
 
 from audio_utils import extract_best_segment, downmix_resample
 
-# Categorias permitidas -> mantém o vocabulário fechado para não vir
-# "guitar-like instrument with reverb" ou outras respostas fora do padrão
+# Categorias permitidas — vocabulário fechado
 CATEGORIAS_VALIDAS = [
     "vocal", "guitarra", "baixo", "bateria",
     "teclado", "synth", "sopro", "cordas", "outro"
 ]
 
-# Ordem de preferencia: tenta o primeiro, se estiver sobrecarregado (503)
-# cai pro proximo. Cada modelo roda em cluster de capacidade separado no
-# Google, entao um 503 num nao significa 503 no outro.
+# Ordem de preferencia: tenta o primeiro, se sobrecarregado (503)
+# cai pro proximo. Cada modelo roda em cluster separado no Google.
 #
-# gemini-3.5-flash em primeiro: tem percepcao mais aguçada pra nuances
-# musicais (articulacoes, timbres hibridos, instrumentos polifonicos vs
-# monofonicos). A diferenca de latencia pro flash-lite e pequena e compensa
-# pela reducao de erros de classificacao em trechos ambiguos.
-load_dotenv()
+# gemini-3.5-flash em primeiro: percepção mais aguçada pra nuances
+# musicais. A diferença de latência pro flash-lite é pequena e compensa
+# pela redução de erros em trechos ambíguos.
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PARENT_ENV = os.path.join(os.path.dirname(_SCRIPT_DIR), ".env")
-if os.path.exists(_PARENT_ENV):
-    load_dotenv(_PARENT_ENV)
 
-# Tenta ler do .env os modelos preferidos pelo usuário, caso contrário usa a ordem padrão
-model_env = os.environ.get("GEMINI_MODELS")
-if model_env:
-    MODELOS_FALLBACK = [m.strip() for m in model_env.split(",") if m.strip()]
-else:
-    MODELOS_FALLBACK = ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash"]
+
+def _load_env_once():
+    """Carrega o .env uma única vez (idempotente via load_dotenv)."""
+    load_dotenv()
+    if os.path.exists(_PARENT_ENV):
+        load_dotenv(_PARENT_ENV)
+
+
+def _get_fallback_models():
+    """Retorna a lista de modelos, lendo GEMINI_MODELS do env se disponível."""
+    _load_env_once()
+    model_env = os.environ.get("GEMINI_MODELS")
+    if model_env:
+        return [m.strip() for m in model_env.split(",") if m.strip()]
+    return ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash"]
+
+
+MODELOS_FALLBACK = _get_fallback_models()
 
 DEFAULT_PROMPT_PT = """Voce e um assistente de organizacao de faixas de audio dentro de uma DAW (estacao de audio digital).
 
