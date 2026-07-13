@@ -17,22 +17,57 @@ Requisitos:
     Variavel de ambiente GEMINI_API_KEY definida (ou arquivo .env na mesma pasta)
 """
 
-import argparse
-import json
-import os
 import sys
-import tempfile
-import time
-from typing import Any, Callable, Dict, List, Optional
+import os
 
+# --- Verify dependencies ---
+REQUIRED_PACKAGES = [
+    ("dotenv", "python-dotenv"),
+    ("google.genai", "google-genai"),
+    ("numpy", "numpy"),
+    ("soundfile", "soundfile"),
+    ("panns_inference", "panns-inference"),
+    ("torch", "torch"),
+    ("soxr", "soxr"),
+    ("scipy", "scipy"),
+]
+
+missing_packages = []
+for module_name, pip_name in REQUIRED_PACKAGES:
+    try:
+        __import__(module_name)
+    except ImportError:
+        missing_packages.append(pip_name)
+
+if missing_packages:
+    print("\n" + "="*60)
+    print("[ERRO] Dependências do Python ausentes / Missing Python dependencies!")
+    print("="*60)
+    print("As seguintes bibliotecas necessárias não estão instaladas:")
+    for pkg in missing_packages:
+        print(f"  - {pkg}")
+    print("\nPara corrigir, execute o arquivo 'setup.bat' na pasta do projeto.")
+    print("Please run 'setup.bat' in the project directory to install dependencies.")
+    print("="*60 + "\n")
+    sys.exit(1)
+
+import json
+import argparse
+import time
+import tempfile
+
+from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-from _bootstrap import CATEGORIAS_VALIDAS, ERROS_TRANSITORIOS, abort_if_missing
-from audio_utils import downmix_resample, extract_best_segment
+from audio_utils import extract_best_segment, downmix_resample
 
-# Abort se faltar dependencias
-abort_if_missing()
+# Categorias permitidas -> mantém o vocabulário fechado para não vir
+# "guitar-like instrument with reverb" ou outras respostas fora do padrão
+CATEGORIAS_VALIDAS = [
+    "vocal", "guitarra", "baixo", "bateria",
+    "teclado", "synth", "sopro", "cordas", "outro"
+]
 
 # Ordem de preferencia: tenta o primeiro, se estiver sobrecarregado (503)
 # cai pro proximo. Cada modelo roda em cluster de capacidade separado no
@@ -42,6 +77,11 @@ abort_if_missing()
 # musicais (articulacoes, timbres hibridos, instrumentos polifonicos vs
 # monofonicos). A diferenca de latencia pro flash-lite e pequena e compensa
 # pela reducao de erros de classificacao em trechos ambiguos.
+load_dotenv()
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PARENT_ENV = os.path.join(os.path.dirname(_SCRIPT_DIR), ".env")
+if os.path.exists(_PARENT_ENV):
+    load_dotenv(_PARENT_ENV)
 
 # Tenta ler do .env os modelos preferidos pelo usuário, caso contrário usa a ordem padrão
 model_env = os.environ.get("GEMINI_MODELS")
@@ -99,11 +139,11 @@ If the audio is silent, too quiet, or cannot be identified, use category "outro"
 """
 
 
-def build_default_prompt(output_language: str = "pt") -> str:
+def build_default_prompt(output_language="pt"):
     return DEFAULT_PROMPT_EN if output_language == "en" else DEFAULT_PROMPT_PT
 
 
-def load_prompt(output_language: str = "pt") -> str:
+def load_prompt(output_language="pt"):
     """Le o prompt de analise do arquivo analysis_prompt.txt se existir,
     caso contrario usa o prompt padrao hardcoded."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -121,7 +161,7 @@ def load_prompt(output_language: str = "pt") -> str:
     return build_default_prompt(output_language)
 
 
-def build_chaining_prompt(panns_result: Dict[str, Any], output_language: str = "pt") -> str:
+def build_chaining_prompt(panns_result, output_language="pt"):
     """
     Constrói o prompt para o modo 'Híbrido com Review'.
     Injeta o resultado do PANNs (modelo local) para que o Gemini possa refinar e polir a resposta,
@@ -187,18 +227,9 @@ Responda APENAS com um JSON valido, sem markdown, exatamente neste formato:
     return prompt
 
 
-def classify_track(
-    client: Any,
-    audio_path: str,
-    models: Optional[List[str]] = None,
-    segment_seconds: float = 8,
-    keep_temp: bool = False,
-    retries_per_model: int = 2,
-    search_start_seconds: Optional[float] = None,
-    search_duration_seconds: Optional[float] = None,
-    on_model_failed: Optional[Callable[[str], None]] = None,
-    output_language: str = "pt"
-) -> Dict[str, Any]:
+def classify_track(client, audio_path, models=None, segment_seconds=8, keep_temp=False,
+                    retries_per_model=2, search_start_seconds=None, search_duration_seconds=None,
+                    on_model_failed=None, output_language="pt"):
     """
     Fluxo completo: acha o trecho de maior energia no arquivo (local, sem IA),
     corta ele pra um wav temporario curto, gera uma versao leve (mono/24kHz)
@@ -254,14 +285,8 @@ def classify_track(
     return result
 
 
-def classify_audio(
-    client: Any,
-    audio_path: str,
-    models: Optional[List[str]] = None,
-    retries_per_model: int = 2,
-    on_model_failed: Optional[Callable[[str], None]] = None,
-    output_language: str = "pt"
-) -> Dict[str, Any]:
+def classify_audio(client, audio_path, models=None, retries_per_model=2, on_model_failed=None,
+                   output_language="pt"):
     """Le um arquivo de audio do disco e manda pro Gemini (via bytes inline).
 
     Mantido por compatibilidade com test_batch.py / uso direto. Nao faz
@@ -280,16 +305,9 @@ def classify_audio(
                                  output_language=output_language)
 
 
-def classify_audio_bytes(
-    client: Any,
-    audio_bytes: bytes,
-    mime_type: str = "audio/wav",
-    models: Optional[List[str]] = None,
-    retries_per_model: int = 2,
-    on_model_failed: Optional[Callable[[str], None]] = None,
-    output_language: str = "pt",
-    custom_prompt: Optional[str] = None
-) -> Dict[str, Any]:
+def classify_audio_bytes(client, audio_bytes, mime_type="audio/wav", models=None,
+                         retries_per_model=2, on_model_failed=None, output_language="pt",
+                         custom_prompt=None):
     """Manda os bytes do audio direto pro Gemini (sem passar por disco/upload)
     e retorna o dict já parseado (ou dict com 'error').
 
@@ -311,7 +329,9 @@ def classify_audio_bytes(
     if models is None:
         models = MODELOS_FALLBACK
 
-    erros_por_modelo: Dict[str, str] = {}
+    ERROS_TRANSITORIOS = ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "DeadlineExceeded", "timeout")
+
+    erros_por_modelo = {}
 
     prompt_to_use = custom_prompt if custom_prompt is not None else load_prompt(output_language)
 
@@ -390,9 +410,9 @@ def main():
 
     models = args.models.split(",") if args.models else None
 
-    from _bootstrap import load_env
-    load_env()
-    
+    load_dotenv()
+    if os.path.exists(_PARENT_ENV):
+        load_dotenv(_PARENT_ENV)
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         print("ERRO: variavel GEMINI_API_KEY nao encontrada.")

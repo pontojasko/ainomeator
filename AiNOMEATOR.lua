@@ -99,6 +99,8 @@ local strings = {
     btn_hide_advanced = "Advanced Options  [-]",
     tip_btn_show_advanced = "Toggle advanced settings like CPU threads, analysis backend, and custom color prompt.",
     lbl_analyzing = "Analyzing tracks with AI...",
+    lbl_preparing_model = "Preparing model...",
+    lbl_preparing = "preparing...",
     lbl_completed = "Analysis completed!",
     lbl_error = "Error during processing!",
     msg_no_audio = "No eligible audio tracks found.",
@@ -189,6 +191,8 @@ local strings = {
     btn_hide_advanced = "Opções Avançadas  [-]",
     tip_btn_show_advanced = "Mostra ou oculta configurações avançadas como backend, threads de CPU e prompt de cores.",
     lbl_analyzing = "Analisando faixas com IA...",
+    lbl_preparing_model = "Preparando modelo...",
+    lbl_preparing = "preparando...",
     lbl_completed = "Analise concluida!",
     lbl_error = "Erro no processamento!",
     msg_no_audio = "Nenhuma faixa de áudio elegível.",
@@ -1006,54 +1010,114 @@ end
 local config_colors, created_new = load_config(config_path)
 
 local only_selected = false
+
+local function import_track_media_cues(track)
+  local num_items = reaper.CountTrackMediaItems(track)
+  if num_items == 0 then return false end
+  
+  local item = reaper.GetTrackMediaItem(track, 0) -- Pega apenas o primeiro item para analisar o tempo
+  local take = reaper.GetActiveTake(item)
+  if not take or reaper.TakeIsMIDI(take) then return false end
+  
+  local source = reaper.GetMediaItemTake_Source(take)
+  if not source then return false end
+  
+  local item_pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+  local processed_anything = false
+  
+  -- 1. Tentar ler as propriedades do arquivo para o BPM base
+  local retval, bpm_str = reaper.GetMediaFileMetadata(source, "BPM")
+  if retval and tonumber(bpm_str) then
+    reaper.SetTempoTimeSigMarker(0, -1, item_pos, -1, -1, tonumber(bpm_str), 0, 0, false)
+    processed_anything = true
+  end
+  
+  -- 2. Ler os cues/marcadores do arquivo
+  if reaper.GetMediaSourceNumProjectMarkers then
+    -- Para REAPER 7+
+    local num_cues = reaper.GetMediaSourceNumProjectMarkers(source)
+    for i = 0, num_cues - 1 do
+      local rv, name, isrgn, pos, color = reaper.GetMediaSourceProjectMarker(source, i)
+      if rv then
+        local proj_time = item_pos + pos
+        local num, den = string.match(name, "(%d+)/(%d+)")
+        local tempo = string.match(name, "[Tt]empo:?%s*(%d+%.?%d*)") or string.match(name, "(%d+%.?%d*)%s*[BbpmBPM]+") or string.match(name, "^%d+%.?%d*$")
+        
+        if num and den then
+          local t = tempo and tonumber(tempo) or 0
+          reaper.SetTempoTimeSigMarker(0, -1, proj_time, -1, -1, t, tonumber(num), tonumber(den), false)
+        elseif tempo then
+          reaper.SetTempoTimeSigMarker(0, -1, proj_time, -1, -1, tonumber(tempo), 0, 0, false)
+        else
+          reaper.AddProjectMarker2(0, isrgn, proj_time, 0, name, -1, color)
+        end
+        processed_anything = true
+      end
+    end
+  else
+    -- Fallback para REAPER 6.x ou mais antigos
+    local selected_items = {}
+    for i = 0, reaper.CountSelectedMediaItems(0) - 1 do
+      selected_items[i+1] = reaper.GetSelectedMediaItem(0, i)
+    end
+    
+    reaper.SelectAllMediaItems(0, false)
+    reaper.SetMediaItemSelected(item, true)
+    
+    -- Executa a ação 40692: Item: Import item media cues as project markers
+    reaper.Main_OnCommand(40692, 0)
+    
+    reaper.SelectAllMediaItems(0, false)
+    for _, sel_item in ipairs(selected_items) do
+      if reaper.ValidatePtr(sel_item, "MediaItem*") then
+        reaper.SetMediaItemSelected(sel_item, true)
+      end
+    end
+    
+    -- Agora iteramos pelos marcadores de projeto recém criados para converte-los
+    local rv, num_markers, num_regions = reaper.CountProjectMarkers(0)
+    for i = num_markers + num_regions - 1, 0, -1 do
+      local ret, isrgn, pos, rgnend, name, markrgnindexnumber = reaper.EnumProjectMarkers(i)
+      if ret and not isrgn then
+        local item_len = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+        if pos >= item_pos - 0.05 and pos <= item_pos + item_len + 0.05 then
+          local num, den = string.match(name, "(%d+)/(%d+)")
+          local tempo = string.match(name, "[Tt]empo:?%s*(%d+%.?%d*)") or string.match(name, "(%d+%.?%d*)%s*[BbpmBPM]+") or string.match(name, "^%d+%.?%d*$")
+          
+          if num and den then
+            local t = tempo and tonumber(tempo) or 0
+            reaper.SetTempoTimeSigMarker(0, -1, pos, -1, -1, t, tonumber(num), tonumber(den), false)
+            reaper.DeleteProjectMarker(0, markrgnindexnumber, false)
+            processed_anything = true
+          elseif tempo then
+            reaper.SetTempoTimeSigMarker(0, -1, pos, -1, -1, tonumber(tempo), 0, 0, false)
+            reaper.DeleteProjectMarker(0, markrgnindexnumber, false)
+            processed_anything = true
+          end
+        end
+      end
+    end
+  end
+  
+  if processed_anything then
+    reaper.UpdateTimeline()
+    return true
+  end
+  
+  return false
+end
+
 local segment_seconds = 8
 local workers = 5
 local color_prompt = ""
 local script_running = true
 local inputs
+local backend_ready = false
 
-
-local function import_track_media_cues(track)
-  if not track or not reaper.ValidatePtr(track, "MediaTrack*") then return end
-
-  -- 1. Salvar seleção atual de itens
-  local selected_items = {}
-  local num_sel_items = reaper.CountSelectedMediaItems(0)
-  for i = 0, num_sel_items - 1 do
-    selected_items[i+1] = reaper.GetSelectedMediaItem(0, i)
-  end
-  
-  -- 2. Deselecionar todos os itens
-  reaper.SelectAllMediaItems(0, false)
-  
-  -- 3. Selecionar itens do track especificado (apenas se tiverem áudio/take ativo e não forem MIDI)
-  local num_items = reaper.CountTrackMediaItems(track)
-  local selected_any = false
-  for i = 0, num_items - 1 do
-    local item = reaper.GetTrackMediaItem(track, i)
-    local take = reaper.GetActiveTake(item)
-    if take and not reaper.TakeIsMIDI(take) then
-      reaper.SetMediaItemSelected(item, true)
-      selected_any = true
-    end
-  end
-  
-  -- 4. Rodar a ação nativa 40361 se algum item foi selecionado
-  if selected_any then
-    reaper.Main_OnCommand(40361, 0) -- Item: Import item media cues as project markers
-  end
-  
-  -- 5. Restaurar a seleção de itens original
-  reaper.SelectAllMediaItems(0, false)
-  for _, item in ipairs(selected_items) do
-    if reaper.ValidatePtr(item, "MediaItem*") then
-      reaper.SetMediaItemSelected(item, true)
-    end
-  end
-end
 
 local function start_analysis()
   track_info = {} -- Reseta o estado para evitar acúmulo de dados entre execuções
+  backend_ready = false
   if current_theme ~= "custom" then
     write_theme_to_ini(current_theme)
   end
@@ -1443,29 +1507,44 @@ local function start_analysis()
 
     if create_folders then
       log("› grouping tracks into instrument folders...")
+      -- Contar faixas por categoria
+      local cat_counts = {}
+      for tr, cat in pairs(track_categories) do
+        if cat and cat ~= "" then
+          cat_counts[cat] = (cat_counts[cat] or 0) + 1
+        end
+      end
+
       local i = 0
       local current_folder = ""
       while i < reaper.CountTracks(0) do
         local tr = reaper.GetTrack(0, i)
         local cat = track_categories[tr]
         if cat and cat ~= "" and cat ~= current_folder and cat ~= "pastas" and cat ~= "efeitos" and cat ~= "outro" then
-          reaper.InsertTrackAtIndex(i, true)
-          local folder_tr = reaper.GetTrack(0, i)
-          local folder_name = cat:upper()
-          reaper.GetSetMediaTrackInfo_String(folder_tr, "P_NAME", folder_name, true)
-          reaper.SetMediaTrackInfo_Value(folder_tr, "I_FOLDERDEPTH", 1)
-          
-          local col = config_colors["pastas"]
-          if col then
-            reaper.SetTrackColor(folder_tr, reaper.ColorToNative(col[1], col[2], col[3]) | 0x1000000)
+          -- A categoria mudou. Se estávamos em uma pasta, precisamos fechá-la.
+          if current_folder ~= "" then
+            if i > 0 then
+              local last_tr = reaper.GetTrack(0, i - 1)
+              local current_depth = reaper.GetMediaTrackInfo_Value(last_tr, "I_FOLDERDEPTH")
+              reaper.SetMediaTrackInfo_Value(last_tr, "I_FOLDERDEPTH", current_depth - 1)
+            end
+            current_folder = ""
           end
-          
-          current_folder = cat
-          
-          if i > 0 then
-            local last_tr = reaper.GetTrack(0, i - 1)
-            local current_depth = reaper.GetMediaTrackInfo_Value(last_tr, "I_FOLDERDEPTH")
-            reaper.SetMediaTrackInfo_Value(last_tr, "I_FOLDERDEPTH", current_depth - 1)
+
+          -- Se a nova categoria tem mais de 1 faixa, criamos a pasta
+          if cat_counts[cat] and cat_counts[cat] > 1 then
+            reaper.InsertTrackAtIndex(i, true)
+            local folder_tr = reaper.GetTrack(0, i)
+            local folder_name = cat:upper()
+            reaper.GetSetMediaTrackInfo_String(folder_tr, "P_NAME", folder_name, true)
+            reaper.SetMediaTrackInfo_Value(folder_tr, "I_FOLDERDEPTH", 1)
+            
+            local col = config_colors["pastas"]
+            if col then
+              reaper.SetTrackColor(folder_tr, reaper.ColorToNative(col[1], col[2], col[3]) | 0x1000000)
+            end
+            
+            current_folder = cat
           end
         end
         i = i + 1
@@ -1486,11 +1565,13 @@ local function start_analysis()
     end
 
     if import_cues then
-      log("› importing media cues/markers...")
+      log("› importing media cues/tempo...")
       for idx, info in pairs(track_info) do
         if info.audio then
-          log(string.format("  + importing cues for: %s", info.name))
-          import_track_media_cues(info.track)
+          log(string.format("  + importing cues/tempo from first item in: %s", info.name))
+          if import_track_media_cues(info.track) then
+            break -- Somente precisamos de uma faixa para extrair o tempo/cues do projeto!
+          end
         end
       end
     end
@@ -1630,7 +1711,7 @@ local layout = {
   toggle_view = { x = 160, y = 105, w = 55, h = 24 },
   copy_logs = { x = 220, y = 105, w = 70, h = 24 },
   analyze = { x = 30, y = 695, w = 260, h = 36 },
-  close = { x = 30, y = 670, w = 260, h = 36 }
+  close = { x = 30, y = 615, w = 260, h = 36 }
 }
 
 -- Layout do modo compacto (painel avançado fechado): logo -> botão Analisar -> toggle -> aviso -> créditos
@@ -1897,6 +1978,18 @@ end
 
 parse_log_progress = function(text)
   for line in text:gmatch("[^\n]+") do
+    local lower_line = line:lower()
+    if lower_line:find("using cpu", 1, true)
+       or lower_line:find("using gpu", 1, true)
+       or lower_line:find("using directml", 1, true)
+       or lower_line:find("using cuda", 1, true)
+       or lower_line:find("carregado", 1, true)
+       or lower_line:find("[batch_rename] backend", 1, true)
+       or lower_line:find("✔ trk", 1, true)
+       or lower_line:find("✖ trk", 1, true)
+    then
+      backend_ready = true
+    end
     if line:find("✔ trk", 1, true) then
       local trk_idx_str = line:match("✔ trk (%d+)")
       if trk_idx_str then
@@ -2015,13 +2108,13 @@ local function draw_visualizer(box_x, box_y, box_w, box_h)
       r, g, b = 0.8, 0.2, 0.2
     elseif info.status == "pending" then
       r, g, b = 0.28, 0.28, 0.28
-      local is_active = true
+      local pending_count_before = 0
       for prev_idx = 1, i - 1 do
         if display_tracks[prev_idx].status == "pending" then
-          is_active = false
-          break
+          pending_count_before = pending_count_before + 1
         end
       end
+      local is_active = backend_ready and (pending_count_before < (workers or 1))
       if is_active then
         is_analyzing = true
         local pulse = 0.35 + 0.15 * math.sin(reaper.time_precise() * 6)
@@ -2508,7 +2601,7 @@ local function draw_gui()
     local credit_text = "by jasko"
     local cr_w, cr_h = gfx.measurestr(credit_text)
     local cr_x = (gfx.w - cr_w) / 2
-    local cr_y = show_advanced and 780 or COMPACT_CREDITS_Y
+    local cr_y = show_advanced and 795 or COMPACT_CREDITS_Y
     gfx.r, gfx.g, gfx.b = 1.0, 1.0, 1.0
     gfx.x = cr_x
     gfx.y = cr_y
@@ -2537,12 +2630,17 @@ local function draw_gui()
     gfx.setfont(1, "Segoe UI", 12)
     gfx.r, gfx.g, gfx.b = 0.85, 0.85, 0.85
     gfx.x, gfx.y = 30, 110
-    gfx.drawstr(t("lbl_analyzing"))
-
-    -- Animacao simples
-    local dot_count = math.floor(reaper.time_precise() * 2) % 4
-    local dots = string.rep(".", dot_count)
-    gfx.drawstr(dots)
+    if not backend_ready then
+      gfx.drawstr(t("lbl_preparing_model"))
+      local dot_count = math.floor(reaper.time_precise() * 2) % 4
+      local dots = string.rep(".", dot_count)
+      gfx.drawstr(dots)
+    else
+      gfx.drawstr(t("lbl_analyzing"))
+      local dot_count = math.floor(reaper.time_precise() * 2) % 4
+      local dots = string.rep(".", dot_count)
+      gfx.drawstr(dots)
+    end
 
     -- Caixa de Logs
     local box_x, box_y, box_w, box_h = 30, 135, 260, 460
@@ -2800,7 +2898,7 @@ local function update_gui()
       gfx.setfont(1, "Segoe UI", 10)
       local cr_w, cr_h = gfx.measurestr("by jasko")
       local cr_x = (gfx.w - cr_w) / 2
-      local cr_y = show_advanced and 780 or COMPACT_CREDITS_Y
+      local cr_y = show_advanced and 795 or COMPACT_CREDITS_Y
       if in_rect(cr_x, cr_y, cr_w, cr_h) then
         open_url("https://jasko.dev")
         return "redraw"

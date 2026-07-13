@@ -36,20 +36,29 @@ numero de faixas. As otimizacoes abaixo atacam exatamente isso:
    version counter do autograd) e desligamos `torch.set_grad_enabled(False)`
    globalmente no processo, ja que este modulo nunca treina nada.
 
-3. RESAMPLE: usamos `audio_utils.resample()` que prioriza soxr (libsoxr,
-   o mesmo resampler que o librosa usa por padrao hoje em dia). Medido neste
+3. RESAMPLE: trocamos `np.interp` (interpolacao linear — funciona, mas gera
+   aliasing e e mais lenta do que parece) por `soxr` (libsoxr, o mesmo
+   resampler que o librosa usa por padrao hoje em dia). Medido neste
    projeto (8s @ 44100Hz -> 32000Hz): np.interp ~6.5ms vs soxr ~3.3ms por
-   faixa — quase 2x mais rapido, e sem aliasing. Fallback para
-   scipy.signal.resample_poly e entao np.interp se soxr nao estiver instalado.
+   faixa — quase 2x mais rapido, e sem aliasing. Se `soxr` nao estiver
+   instalado, cai pra `scipy.signal.resample_poly` com a razao up/down
+   aproximada (ver `_resample` pra entender por que a razao EXATA seria
+   mais lenta que o np.interp), e se nem scipy tiver, cai pro np.interp
+   original — nunca quebra por falta de dependencia opcional.
 
-4. TOP-K via argpartition: O(n) para achar top-10 vs O(n log n) de argsort
-   sobre todas as 527 classes. Ganho pequeno em absoluto, mas gratis.
+4. TOP-K: trocamos `np.argsort` (O(n log n) nas 527 classes inteiras) por
+   `np.argpartition` (O(n)) pra achar so as top-10, e só ordenamos essas 10.
+   Ganho pequeno em termos absolutos (527 elementos e pouco), mas e "gratis"
+   e some com qualquer razao de nao fazer.
 
 5. GPU (NVIDIA / AMD):
-   - NVIDIA CUDA: ja funcionava (`torch.cuda.is_available()`).
-   - AMD no Linux (ROCm): um PyTorch compilado com ROCm expoe a MESMA API
-     `torch.cuda.*`. Com o pacote certo instalado, cai automaticamente no
-     mesmo caminho "cuda".
+   - NVIDIA CUDA: já funcionava (`torch.cuda.is_available()`).
+   - AMD no Linux (ROCm): um PyTorch compilado com ROCm expõe a MESMA API
+     `torch.cuda.*` (é a forma que a AMD escolheu para ter compat com o
+     ecossistema CUDA). Ou seja: com o pacote certo instalado
+     (ver README/requirements), o AMD já cai automaticamente no mesmo
+     caminho "cuda" — nao tivemos que mudar nada na logica, so garantir que
+     nao tem NADA hardcoded assumindo NVIDIA.
    - AMD/Intel no Windows (DirectML): ROCm nao roda no Windows. A unica
      rota de GPU nesse caso e `torch-directml`. A lib `panns_inference` so
      entende os STRINGS 'cuda' ou 'cpu' internamente (ela faz
@@ -58,12 +67,13 @@ numero de faixas. As otimizacoes abaixo atacam exatamente isso:
      movemos o `nn.Module` manualmente pro device DML, e escrevemos nosso
      proprio laco de inferencia (`_forward_on_device`) no lugar de
      `at.inference()`.
-     CUIDADO: o torch-directml tem incompatibilidades conhecidas. Por
+     CUIDADO: o torch-directml tem incompatibilidades conhecidas. por
      exemplo, o bug do `torch.inference_mode()` (microsoft/DirectML#602,
      "Cannot set version_counter"), que contornamos usando `torch.no_grad()`
-     no `_forward_on_device`. Alem disso, se qualquer outra operacao
+     no `_forward_on_device`. alem disso, se qualquer outra operacao
      falhar em runtime, o codigo detecta, desliga DML PRA SEMPRE nesse
-     processo e cai pra CPU automaticamente.
+     processo (evita tentar nas proximas 300 faixas) e cai pra CPU
+     automaticamente, sem derrubar o batch inteiro.
 
 6. INFERENCIA EM LOTE (`classify_many_with_panns`): a funcao original
    processa um arquivo por chamada. Se voce esta processando N faixas de
@@ -72,167 +82,89 @@ numero de faixas. As otimizacoes abaixo atacam exatamente isso:
    overhead de Python por chamada e, em GPU, paraleliza de verdade dentro
    do proprio device. Use essa funcao quando estiver classificando varias
    faixas em sequencia com o backend "panns" puro (sem hibrido/Gemini).
-
-7. AGREGACAO DE SCORES POR CATEGORIA (`_pick_label_aggregated`): em vez de
-   pegar apenas o top-1 label mapeado, acumula os scores de TODAS as 527
-   classes por categoria. Isso resolve casos onde a energia esta distribuida
-   entre multiplos labels da mesma categoria (ex: Drum 0.3 + Snare 0.25 +
-   Hi-hat 0.2 = categoria "bateria" com score agregado 0.75, que vence
-   "Speech" com 0.35 individual). O nome do instrumento e o do label
-   individual de maior score dentro da categoria vencedora.
 =====================================================================
 """
 
-from __future__ import annotations
-
 import os
+import sys
+import json
+import math
 import threading
-from typing import Any
-
 import numpy as np
-import soundfile as sf
 
-from audio_utils import resample as _resample_fn
+# --- Mapeamento de labels do AudioSet -> categorias do AiNOMEATOR ---------
+# Mesma ideia do yamnet_classify.py: o PANNs usa a mesma ontologia AudioSet,
+# entao os nomes de classe (quase) coincidem com os do YamNet.
 
-# ---------------------------------------------------------------------------
-# Mapeamento de labels do AudioSet -> categorias do AiNOMEATOR
-# ---------------------------------------------------------------------------
-# Expandido para cobrir ~90 labels musicais do AudioSet (527 classes totais).
-# Formato: "Label AudioSet" -> (categoria, nome_pt, nome_en)
-#
-# NOTA: os strings devem bater EXATAMENTE com panns_inference.labels.
-# Em _ensure_ready() validamos e descartamos silenciosamente os que nao baterem.
-
-_LABEL_MAP_RAW: dict[str, tuple[str, str, str]] = {
-    # ------------------------------------------------------------------
+_LABEL_MAP = {
     # Vocais
-    # ------------------------------------------------------------------
-    "Speech":                           ("vocal", "Vocal",                    "Vocal"),
-    "Singing":                          ("vocal", "Vocal (canto)",             "Singing"),
-    "Vocal music":                      ("vocal", "Musica vocal",              "Vocal music"),
-    "Female singing":                   ("vocal", "Vocal feminino",            "Female vocal"),
-    "Male singing":                     ("vocal", "Vocal masculino",           "Male vocal"),
-    "Choir":                            ("vocal", "Coral",                     "Choir"),
-    "A capella":                        ("vocal", "Vocal",                     "A capella"),
-    "Yodeling":                         ("vocal", "Vocal (yodel)",             "Vocal (yodel)"),
-    "Child singing":                    ("vocal", "Vocal infantil",            "Child vocal"),
-    "Rapping":                          ("vocal", "Vocal (rap)",               "Rap vocal"),
-    "Humming":                          ("vocal", "Vocal (humming)",           "Humming"),
-    "Beatboxing":                       ("vocal", "Vocal (beatbox)",           "Beatboxing"),
-    "Whistling":                        ("vocal", "Vocal (assobio)",           "Whistling"),
-    "Throat singing":                   ("vocal", "Vocal (gutural)",           "Throat singing"),
+    "Speech":                         ("vocal", "Vocal", "Vocal"),
+    "Female singing":                 ("vocal", "Vocal feminino", "Female vocal"),
+    "Male singing":                   ("vocal", "Vocal masculino", "Male vocal"),
+    "Choir":                          ("vocal", "Coral", "Choir"),
+    "A capella":                      ("vocal", "Vocal", "Vocal"),
+    "Yodeling":                       ("vocal", "Vocal (yodel)", "Vocal (yodel)"),
+    "Child singing":                  ("vocal", "Vocal infantil", "Child vocal"),
+    "Rapping":                        ("vocal", "Vocal (rap)", "Rap vocal"),
 
-    # ------------------------------------------------------------------
     # Bateria / Percussao
-    # ------------------------------------------------------------------
-    "Snare drum":                       ("bateria", "Bateria (caixa)",         "Drums (snare)"),
-    "Bass drum":                        ("bateria", "Bateria (bumbo)",         "Drums (kick)"),
-    "Drum kit":                         ("bateria", "Bateria",                 "Drums"),
-    "Drum":                             ("bateria", "Bateria",                 "Drums"),
-    "Drum roll":                        ("bateria", "Bateria (roll)",          "Drum roll"),
-    "Cymbal":                           ("bateria", "Bateria (pratos)",        "Cymbals"),
-    "Hi-hat":                           ("bateria", "Bateria (hi-hat)",        "Hi-hat"),
-    "Crash cymbal":                     ("bateria", "Bateria (crash)",         "Crash cymbal"),
-    "Tambourine":                       ("bateria", "Percussao (tamborim)",    "Tambourine"),
-    "Maracas":                          ("bateria", "Percussao (maracas)",     "Maracas"),
-    "Castanet":                         ("bateria", "Percussao (castanholas)", "Castanets"),
-    "Clapping":                         ("bateria", "Palmas",                  "Clapping"),
-    "Hand clap":                        ("bateria", "Palmas",                  "Hand clap"),
-    "Cowbell":                          ("bateria", "Percussao (cowbell)",     "Cowbell"),
-    "Gong":                             ("bateria", "Percussao (gongo)",       "Gong"),
-    "Drum machine":                     ("bateria", "Bateria eletronica",      "Drum machine"),
-    "Timpani":                          ("bateria", "Percussao (timpano)",     "Timpani"),
-    "Percussion":                       ("bateria", "Percussao",               "Percussion"),
-    "Tabla":                            ("bateria", "Percussao (tabla)",       "Tabla"),
-    "Djembe":                           ("bateria", "Percussao (djembe)",      "Djembe"),
-    "Bongo":                            ("bateria", "Percussao (bongo)",       "Bongo"),
-    "Conga":                            ("bateria", "Percussao (conga)",       "Conga"),
-    "Wood block":                       ("bateria", "Percussao (wood block)",  "Wood block"),
-    "Rimshot":                          ("bateria", "Bateria (rimshot)",       "Rimshot"),
-    "Mallet percussion":                ("bateria", "Percussao (mallets)",     "Mallet percussion"),
-    "Marimba, xylophone":               ("bateria", "Marimba/Xilofone",       "Marimba/Xylophone"),
-    "Glockenspiel":                     ("bateria", "Glockenspiel",            "Glockenspiel"),
-    "Vibraphone":                       ("bateria", "Vibrafone",               "Vibraphone"),
-    "Steelpan":                         ("bateria", "Steel drum",              "Steelpan"),
-    "Tubular bells":                    ("bateria", "Sinos tubulares",         "Tubular bells"),
-    "Shaker":                           ("bateria", "Percussao (shaker)",      "Shaker"),
+    "Snare drum":                     ("bateria", "Bateria (caixa)", "Drums (snare)"),
+    "Bass drum":                      ("bateria", "Bateria (bumbo)", "Drums (kick)"),
+    "Drum kit":                       ("bateria", "Bateria", "Drums"),
+    "Drum":                           ("bateria", "Bateria", "Drums"),
+    "Drum roll":                      ("bateria", "Bateria (roll)", "Drum roll"),
+    "Cymbal":                         ("bateria", "Bateria (pratos)", "Cymbals"),
+    "Hi-hat":                         ("bateria", "Bateria (hi-hat)", "Hi-hat"),
+    "Tambourine":                     ("bateria", "Percussao (tamborim)", "Tambourine"),
+    "Maracas":                        ("bateria", "Percussao (maracas)", "Maracas"),
+    "Castanet":                       ("bateria", "Percussao (castanholas)", "Castanets"),
+    "Clapping":                       ("bateria", "Palmas", "Clapping"),
+    "Hand clap":                      ("bateria", "Palmas", "Hand clap"),
+    "Cowbell":                        ("bateria", "Percussao (cowbell)", "Cowbell"),
+    "Gong":                           ("bateria", "Percussao (gongo)", "Gong"),
+    "Drum machine":                   ("bateria", "Bateria eletronica", "Drum machine"),
+    "Timpani":                        ("bateria", "Percussao (tímpano)", "Timpani"),
 
-    # ------------------------------------------------------------------
     # Baixo
-    # ------------------------------------------------------------------
-    "Bass guitar":                      ("baixo", "Baixo",                    "Bass"),
-    "Double bass":                      ("baixo", "Contrabaixo",              "Double bass"),
+    "Bass guitar":                    ("baixo", "Baixo", "Bass"),
+    "Double bass":                    ("baixo", "Contrabaixo", "Double bass"),
 
-    # ------------------------------------------------------------------
     # Guitarra
-    # ------------------------------------------------------------------
-    "Guitar":                           ("guitarra", "Guitarra",              "Guitar"),
-    "Acoustic guitar":                  ("guitarra", "Violao",                "Acoustic guitar"),
-    "Electric guitar":                  ("guitarra", "Guitarra",              "Electric guitar"),
-    "Steel guitar, slide guitar":       ("guitarra", "Guitarra (steel/slide)","Steel/slide guitar"),
-    "Banjo":                            ("guitarra", "Banjo",                 "Banjo"),
-    "Ukulele":                          ("guitarra", "Ukulele",               "Ukulele"),
-    "Tapping (guitar technique)":       ("guitarra", "Guitarra (tapping)",    "Guitar tapping"),
-    "Strum":                            ("guitarra", "Guitarra (dedilhado)",  "Strum"),
-    "Sitar":                            ("guitarra", "Sitar",                 "Sitar"),
-    "Plucked string instrument":        ("guitarra", "Cordas dedilhadas",     "Plucked strings"),
+    "Acoustic guitar":                ("guitarra", "Violão", "Acoustic guitar"),
+    "Electric guitar":                ("guitarra", "Guitarra", "Electric guitar"),
+    "Steel guitar, slide guitar":     ("guitarra", "Guitarra (steel/slide)", "Steel/slide guitar"),
+    "Banjo":                          ("guitarra", "Banjo", "Banjo"),
+    "Ukulele":                        ("guitarra", "Ukulele", "Ukulele"),
 
-    # ------------------------------------------------------------------
     # Teclado / Piano
-    # ------------------------------------------------------------------
-    "Piano":                            ("teclado", "Piano",                  "Piano"),
-    "Electric piano":                   ("teclado", "Piano eletrico",         "Electric piano"),
-    "Organ":                            ("teclado", "Orgao",                  "Organ"),
-    "Electronic organ":                 ("teclado", "Orgao eletronico",       "Electronic organ"),
-    "Keyboard (musical)":               ("teclado", "Teclado",                "Keyboard"),
-    "Harpsichord":                      ("teclado", "Cravo",                  "Harpsichord"),
-    "Accordion":                        ("teclado", "Acordeao",               "Accordion"),
-    "Concertina":                       ("teclado", "Concertina",             "Concertina"),
+    "Piano":                          ("teclado", "Piano", "Piano"),
+    "Electric piano":                 ("teclado", "Piano eletrico", "Electric piano"),
+    "Organ":                          ("teclado", "Orgao", "Organ"),
+    "Electronic organ":               ("teclado", "Orgao eletronico", "Electronic organ"),
+    "Keyboard (musical)":             ("teclado", "Teclado", "Keyboard"),
+    "Harpsichord":                    ("teclado", "Cravo", "Harpsichord"),
 
-    # ------------------------------------------------------------------
     # Synth
-    # ------------------------------------------------------------------
-    "Synthesizer":                      ("synth", "Synth",                    "Synth"),
+    "Synthesizer":                    ("synth", "Synth", "Synth"),
 
-    # ------------------------------------------------------------------
     # Sopro
-    # ------------------------------------------------------------------
-    "Flute":                            ("sopro", "Flauta",                   "Flute"),
-    "Saxophone":                        ("sopro", "Saxofone",                 "Saxophone"),
-    "Trumpet":                          ("sopro", "Trompete",                 "Trumpet"),
-    "Trombone":                         ("sopro", "Trombone",                 "Trombone"),
-    "Clarinet":                         ("sopro", "Clarinete",                "Clarinet"),
-    "Harmonica":                        ("sopro", "Gaita",                    "Harmonica"),
-    "French horn":                      ("sopro", "Trompa",                   "French horn"),
-    "Oboe":                             ("sopro", "Oboe",                     "Oboe"),
-    "Brass instrument":                 ("sopro", "Metais",                   "Brass instrument"),
-    "Wind instrument, woodwind instrument": ("sopro", "Sopro (madeiras)",     "Woodwind"),
-    "Bassoon":                          ("sopro", "Fagote",                   "Bassoon"),
-    "Bagpipes":                         ("sopro", "Gaita de foles",           "Bagpipes"),
-    "Didgeridoo":                       ("sopro", "Didgeridoo",               "Didgeridoo"),
+    "Flute":                          ("sopro", "Flauta", "Flute"),
+    "Saxophone":                      ("sopro", "Saxofone", "Saxophone"),
+    "Trumpet":                        ("sopro", "Trompete", "Trumpet"),
+    "Trombone":                       ("sopro", "Trombone", "Trombone"),
+    "Clarinet":                       ("sopro", "Clarinete", "Clarinet"),
+    "Harmonica":                      ("sopro", "Gaita", "Harmonica"),
+    "French horn":                    ("sopro", "Trompa", "French horn"),
+    "Oboe":                           ("sopro", "Oboe", "Oboe"),
+    "Brass instrument":               ("sopro", "Metais", "Brass instrument"),
 
-    # ------------------------------------------------------------------
     # Cordas
-    # ------------------------------------------------------------------
-    "Violin, fiddle":                   ("cordas", "Violino",                 "Violin"),
-    "Cello":                            ("cordas", "Violoncelo",              "Cello"),
-    "String section":                   ("cordas", "Cordas",                  "Strings"),
-    "Harp":                             ("cordas", "Harpa",                   "Harp"),
-    "Mandolin":                         ("cordas", "Bandolim",                "Mandolin"),
-    "Bowed string instrument":          ("cordas", "Cordas (arco)",           "Bowed strings"),
-    "Pizzicato":                        ("cordas", "Pizzicato",               "Pizzicato"),
-    "Zither":                           ("cordas", "Citara",                  "Zither"),
-
-    # ------------------------------------------------------------------
-    # Generico musical (nao e instrumento especifico, mas e musica)
-    # ------------------------------------------------------------------
-    "Music":                            ("outro", "Musica",                   "Music"),
-    "Musical instrument":               ("outro", "Instrumento musical",      "Musical instrument"),
-    "Orchestra":                        ("outro", "Orquestra",                "Orchestra"),
+    "Violin, fiddle":                 ("cordas", "Violino", "Violin"),
+    "Cello":                          ("cordas", "Violoncelo", "Cello"),
+    "String section":                 ("cordas", "Cordas", "Strings"),
+    "Harp":                           ("cordas", "Harpa", "Harp"),
+    "Mandolin":                       ("cordas", "Bandolim", "Mandolin"),
 }
-
-# _LABEL_MAP e preenchido em _ensure_ready() apos validar contra panns_inference.labels
-_LABEL_MAP: dict[str, tuple[str, str, str]] = {}
 
 
 # ===========================================================================
@@ -244,19 +176,26 @@ _inference_lock = threading.Lock()
 _ready = False
 
 _audio_tagger = None
-_panns_labels: list[str] = []
-_panns_label_set: frozenset[str] = frozenset()   # para lookup O(1) em _ensure_ready
-_device_str: str = "cpu"
-_device_backend: str = "cpu"
-_use_manual_forward: bool = False
-_dml_broken: bool = False
+_panns_labels = None
+_device_str = None          # 'cuda', 'cpu', ou um device DirectML
+_device_backend = None      # 'cuda(nvidia)', 'rocm(amd)', 'directml', 'cpu'
+_use_manual_forward = False  # True quando precisamos bypassar at.inference() (caso DirectML)
+_dml_broken = False          # vira True se DML falhar em runtime -> cai pra CPU pro resto do processo
 
 
-def _detect_device() -> tuple[Any, str]:
-    """Escolhe o melhor device disponivel nessa ordem de preferencia:
-    1. CUDA  -> NVIDIA (CUDA) e AMD no Linux (ROCm via mesma API torch.cuda.*).
-    2. DirectML -> unica rota de GPU para AMD/Intel no Windows (sem ROCm).
-    3. CPU   -> sempre funciona, fallback final.
+def _detect_device():
+    """
+    Escolhe o melhor device disponivel, nessa ordem de preferencia:
+
+        1. CUDA  -> cobre NVIDIA (CUDA de verdade) E AMD no Linux (ROCm),
+                    porque um torch compilado com ROCm reusa a MESMA API
+                    torch.cuda.*. Nao ha necessidade de codigo especial pra
+                    "AMD no Linux": se o usuario instalou o torch+ROCm certo,
+                    isso ja cai aqui sozinho.
+        2. DirectML -> unica rota de GPU pra AMD/Intel no Windows (sem
+                    ROCm). Best-effort: pode nao suportar todos os operadores
+                    que o Cnn14 usa.
+        3. CPU   -> sempre funciona, fallback final.
 
     Pode ser forcado via variavel de ambiente PANNS_DEVICE=cuda|dml|cpu|auto.
     """
@@ -268,8 +207,13 @@ def _detect_device() -> tuple[Any, str]:
         return "cpu", "cpu"
 
     if forced in ("auto", "cuda") and torch.cuda.is_available():
+        # cudnn.benchmark: os segmentos analisados tem tamanho fixo (mesma
+        # duracao em amostras na maioria dos casos), entao vale a pena deixar
+        # o cuDNN testar/escolher o algoritmo de convolucao mais rapido pro
+        # shape de entrada na primeira chamada e reusar depois.
         torch.backends.cudnn.benchmark = True
         try:
+            # torch.version.hip so existe (e nao e None) em builds ROCm.
             is_rocm = bool(getattr(torch.version, "hip", None))
         except Exception:
             is_rocm = False
@@ -289,31 +233,39 @@ def _detect_device() -> tuple[Any, str]:
     return "cpu", "cpu"
 
 
-def _ensure_ready() -> None:
-    """Roda TUDO que so precisa acontecer uma vez por processo: .env, threads
-    do torch, import de torch/panns_inference, deteccao de device,
-    carregamento do checkpoint e validacao do _LABEL_MAP.
-
-    Protegido por lock (varias threads podem chamar isso ao mesmo tempo no
-    ThreadPoolExecutor do batch_rename.py).
+def _ensure_ready():
     """
-    global _ready, _audio_tagger, _panns_labels, _panns_label_set
-    global _device_str, _device_backend, _use_manual_forward, _LABEL_MAP
+    Roda TUDO que so precisa acontecer uma vez por processo: .env, threads
+    do torch, import de torch/panns_inference, deteccao de device e
+    carregamento do checkpoint. Protegido por lock (varias threads podem
+    chamar isso ao mesmo tempo no ThreadPoolExecutor do batch_rename.py).
+    """
+    global _ready, _audio_tagger, _panns_labels
+    global _device_str, _device_backend, _use_manual_forward
 
     if _ready:
         return
 
     with _init_lock:
-        if _ready:
+        if _ready:  # outra thread pode ter inicializado enquanto esperavamos o lock
             return
 
-        # .env: le do disco UMA vez, nao a cada faixa
-        from _bootstrap import load_env
-        load_env()
+        # --- .env: le do disco UMA vez, nao a cada faixa ------------------
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+            _script_dir = os.path.dirname(os.path.abspath(__file__))
+            _parent_env = os.path.join(os.path.dirname(_script_dir), ".env")
+            if os.path.exists(_parent_env):
+                load_dotenv(_parent_env)
+        except ImportError:
+            pass
 
         import torch
 
-        # Gradientes desligados globalmente: este processo so faz inferencia.
+        # Gradientes desligados globalmente: este processo so faz inferencia,
+        # nunca treina nada. Evita qualquer alocacao de autograd por engano
+        # em algum ponto do pipeline.
         torch.set_grad_enabled(False)
 
         panns_threads = os.environ.get("PANNS_THREADS")
@@ -322,19 +274,32 @@ def _ensure_ready() -> None:
                 torch.set_num_threads(int(panns_threads))
             except ValueError:
                 pass
+        # Sem PANNS_THREADS definido, mantemos o default do torch (usa todos
+        # os cores). Se voce roda o batch com --workers > 1 (varias faixas
+        # em paralelo), vale a pena setar PANNS_THREADS=<cores/workers> pra
+        # evitar oversubscription (N threads de intra-op x M workers
+        # concorrentes brigando pelos mesmos cores).
 
-        from panns_inference import AudioTagging, labels as panns_labels_raw
+        from panns_inference import AudioTagging, labels
 
         device, backend = _detect_device()
         manual_forward = False
 
         if backend == "directml":
+            # panns_inference so entende os strings 'cuda'/'cpu' -> criamos
+            # em CPU (rapido, so aloca os pesos) e movemos o nn.Module pra
+            # GPU manualmente. A partir daqui, NAO usamos mais at.inference()
+            # (ele faria .cuda() hardcoded e ignoraria nosso device DML) -
+            # usamos _forward_on_device() no lugar.
             at = AudioTagging(checkpoint_path=None, device="cpu")
             try:
                 at.model.to(device)
                 manual_forward = True
             except Exception as e:
-                err_msg = repr(e) if isinstance(e, UnicodeDecodeError) else str(e)
+                try:
+                    err_msg = str(e)
+                except UnicodeDecodeError:
+                    err_msg = repr(e)
                 print(f"  [PANNs] Nao foi possivel mover o modelo pra DirectML "
                       f"({type(e).__name__}: {err_msg}). Usando CPU.", flush=True)
                 device, backend = "cpu", "cpu"
@@ -342,7 +307,10 @@ def _ensure_ready() -> None:
             try:
                 at = AudioTagging(checkpoint_path=None, device=device)
             except Exception as e:
-                err_msg = repr(e) if isinstance(e, UnicodeDecodeError) else str(e)
+                try:
+                    err_msg = str(e)
+                except UnicodeDecodeError:
+                    err_msg = repr(e)
                 print(f"  [PANNs] Nao foi possivel inicializar no device {backend} "
                       f"({type(e).__name__}: {err_msg}). Caindo para CPU.", flush=True)
                 device, backend = "cpu", "cpu"
@@ -351,49 +319,90 @@ def _ensure_ready() -> None:
         print(f"  [PANNs] CNN14 carregado (device={backend}) (~300MB, so na primeira faixa)")
 
         _audio_tagger = at
-        _panns_labels = list(panns_labels_raw)
-        _panns_label_set = frozenset(_panns_labels)
+        _panns_labels = labels
         _device_str = device
         _device_backend = backend
         _use_manual_forward = manual_forward
-
-        # Valida _LABEL_MAP_RAW contra os labels reais do modelo.
-        # Labels com nomes que nao existem no AudioSet 527 sao descartados
-        # silenciosamente para nao causar KeyError em _pick_label*.
-        valid_count = 0
-        for label_str, mapping in _LABEL_MAP_RAW.items():
-            if label_str in _panns_label_set:
-                _LABEL_MAP[label_str] = mapping
-                valid_count += 1
-            # labels nao encontrados sao simplesmente ignorados
-
-        print(f"  [PANNs] _LABEL_MAP validado: {valid_count}/{len(_LABEL_MAP_RAW)} labels ativos")
-
         _ready = True
 
 
-def _get_model() -> tuple[Any, list[str]]:
+def _get_model():
     _ensure_ready()
     return _audio_tagger, _panns_labels
 
 
 # ===========================================================================
-# Audio: leitura + resample
+# Audio: leitura + resample otimizado
 # ===========================================================================
 
-def _load_audio_32k_mono(audio_path: str) -> np.ndarray:
-    """Le o audio com soundfile, converte para mono e reamostra para 32kHz
-    (taxa que o PANNs/Cnn14 espera), sem depender de librosa/ffmpeg.
+def _resample(data, sr, target_sr):
     """
+    Reamostra `data` (mono, float32) de `sr` pra `target_sr`. Sem comprimir,
+    sem cortar, sem tocar no conteudo — so muda a taxa de amostragem.
+
+    Cadeia de prioridade (a primeira que estiver disponivel/segura e usada):
+
+    1. `soxr` (libsoxr): o resampler que o proprio librosa usa por padrao
+       hoje em dia (`res_type="soxr_hq"`). Filtro polifasico em C++ bem
+       otimizado, ~2x mais rapido que np.interp NO BENCHMARK DESTE PROJETO
+       (8s @ 44100->32000: ~3.3ms vs ~6.5ms) e com qualidade bem superior
+       (sem aliasing). Melhor opcao na quase totalidade dos casos.
+       pip install soxr
+
+    2. `scipy.signal.resample_poly` (filtro FIR polifasico, janela Kaiser),
+       como fallback se soxr nao estiver instalado. CUIDADO: passar a razao
+       EXATA up/down (ex: 44100->32000 = 320/441) faz o resample_poly
+       upsamplar por 320x ANTES de decimar — pra um segmento de 8s isso
+       gera um array intermediario de ~113 milhoes de amostras e fica mais
+       LENTO que a interpolacao linear que estavamos tentando substituir
+       (testado aqui: 0.29x, ou seja, PIOR). Por isso aproximamos a razao
+       com `Fraction(...).limit_denominator(256)`: troca uma fracao de
+       cent de afinacao (irrelevante pra classificar instrumento) por
+       manter o filtro polifasico realmente rapido.
+
+    3. `np.interp` (interpolacao linear) — ultimo recurso, sem dependencias
+       extras, igual ao comportamento original.
+    """
+    if sr == target_sr:
+        return data
+
+    try:
+        import soxr
+        return soxr.resample(data, sr, target_sr).astype(np.float32)
+    except ImportError:
+        pass
+
+    try:
+        from scipy.signal import resample_poly
+        from fractions import Fraction
+        frac = Fraction(int(target_sr), int(sr)).limit_denominator(256)
+        up, down = frac.numerator, frac.denominator
+        return resample_poly(data, up, down).astype(np.float32)
+    except ImportError:
+        pass
+
+    duration = len(data) / sr
+    n_target = max(1, int(round(duration * target_sr)))
+    x_old = np.linspace(0, duration, num=len(data), endpoint=False)
+    x_new = np.linspace(0, duration, num=n_target, endpoint=False)
+    return np.interp(x_new, x_old, data).astype(np.float32)
+
+
+def _load_audio_32k_mono(audio_path):
+    """Le o audio com soundfile, converte pra mono e reamostra pra 32kHz
+    (taxa que o PANNs/Cnn14 espera), sem depender de librosa/ffmpeg."""
+    import soundfile as sf
+
     data, sr = sf.read(audio_path, always_2d=False, dtype="float32")
     if data.ndim > 1:
         data = data.mean(axis=1, dtype=np.float32)
 
+    # Peak normalization
     max_val = np.max(np.abs(data)) if data.size else 0.0
     if max_val > 0:
         data = data / max_val
 
-    data = _resample_fn(data, sr, 32000)
+    data = _resample(data, sr, 32000)
     return np.ascontiguousarray(data, dtype=np.float32)
 
 
@@ -401,14 +410,13 @@ def _load_audio_32k_mono(audio_path: str) -> np.ndarray:
 # Inferencia
 # ===========================================================================
 
-def _pick_label(scores: np.ndarray, output_language: str) -> tuple[str, str, float]:
-    """Pega o top-K labels, retorna o primeiro com mapeamento no _LABEL_MAP.
-
-    Estrategia simples (top-1 mapeado). Para precisao maxima, prefira
-    _pick_label_aggregated(), que soma scores por categoria antes de decidir.
-    """
+def _pick_label(scores, output_language):
+    """Recebe o vetor de scores (527,) de UMA faixa e devolve
+    (category, instrument, confidence) usando o _LABEL_MAP."""
     K = 10
     if scores.shape[0] > K:
+        # argpartition: O(n) pra achar as top-K, em vez de ordenar as 527
+        # classes inteiras (O(n log n)) so pra usar as primeiras 10.
         unsorted_top = np.argpartition(scores, -K)[-K:]
         top_indices = unsorted_top[np.argsort(scores[unsorted_top])[::-1]]
     else:
@@ -418,67 +426,31 @@ def _pick_label(scores: np.ndarray, output_language: str) -> tuple[str, str, flo
         label_name = _panns_labels[idx]
         if label_name in _LABEL_MAP:
             category, inst_pt, inst_en = _LABEL_MAP[label_name]
+            confidence = float(scores[idx])
             instrument = inst_en if output_language == "en" else inst_pt
-            return category, instrument, round(float(scores[idx]), 3)
+            return category, instrument, round(confidence, 3)
 
     top_idx = int(top_indices[0])
-    return "outro", _panns_labels[top_idx], round(float(scores[top_idx]), 3)
+    label_name = _panns_labels[top_idx]
+    return "outro", label_name, round(float(scores[top_idx]), 3)
 
 
-def _pick_label_aggregated(scores: np.ndarray, output_language: str) -> tuple[str, str, float]:
-    """Agrega scores de TODAS as 527 classes por categoria antes de decidir.
-
-    Por que isso importa: se "Drum"=0.30, "Snare drum"=0.25 e "Hi-hat"=0.20,
-    nenhum individualmente supera "Speech"=0.35, mas a categoria "bateria"
-    tem score agregado 0.75 e deve vencer. Esta funcao captura esse caso.
-
-    Fluxo:
-    1. Itera todas as 527 classes (O(n), ~0.05ms — insignificante).
-    2. Acumula score por categoria para todas as classes mapeadas.
-    3. A categoria com maior score agregado vence.
-    4. O nome do instrumento e o do label individual de maior score
-       dentro da categoria vencedora.
-    5. O confidence e o score agregado da categoria (capped em 1.0).
-
-    Returns:
-        (category, instrument, confidence)
+def _forward_on_device(audio_batch):
     """
-    # Acumuladores por categoria
-    cat_scores: dict[str, float] = {}
-    cat_best_label: dict[str, tuple[float, str, str]] = {}  # cat -> (score, pt, en)
-
-    for i, label_name in enumerate(_panns_labels):
-        if label_name not in _LABEL_MAP:
-            continue
-        category, inst_pt, inst_en = _LABEL_MAP[label_name]
-        score = float(scores[i])
-        cat_scores[category] = cat_scores.get(category, 0.0) + score
-        prev_score, _, _ = cat_best_label.get(category, (-1.0, "", ""))
-        if score > prev_score:
-            cat_best_label[category] = (score, inst_pt, inst_en)
-
-    if not cat_scores:
-        # Nenhum label mapeado — fallback para o top-1 generico
-        top_idx = int(np.argmax(scores))
-        return "outro", _panns_labels[top_idx], round(float(scores[top_idx]), 3)
-
-    best_cat = max(cat_scores, key=lambda c: cat_scores[c])
-    agg_confidence = min(1.0, cat_scores[best_cat])  # cap em 1.0
-    _, inst_pt, inst_en = cat_best_label[best_cat]
-    instrument = inst_en if output_language == "en" else inst_pt
-    return best_cat, instrument, round(agg_confidence, 3)
-
-
-def _forward_on_device(audio_batch: np.ndarray) -> np.ndarray:
-    """Roda o forward pass manualmente no device configurado (usado no caminho
+    Roda o forward pass manualmente no device configurado (usado no caminho
     DirectML, onde nao podemos usar at.inference() porque ela faz .cuda()
     hardcoded). audio_batch: numpy (batch, samples) float32.
 
     Retorna clipwise_output (batch, 527) como numpy array.
+
+    Se qualquer coisa falhar aqui (operador nao suportado no DirectML, por
+    exemplo), o chamador (`_run_inference`) desliga DML pro resto do
+    processo e refaz a chamada em CPU.
     """
     import torch
 
     tensor = torch.as_tensor(audio_batch, dtype=torch.float32, device=_device_str)
+    
     # workaround para microsoft/DirectML#602: inference_mode quebra no DML
     with torch.no_grad():
         _audio_tagger.model.eval()
@@ -486,10 +458,11 @@ def _forward_on_device(audio_batch: np.ndarray) -> np.ndarray:
     return output_dict["clipwise_output"].detach().to("cpu").numpy()
 
 
-def _run_inference(audio_batch: np.ndarray) -> np.ndarray:
-    """Ponto unico de entrada para rodar o modelo, batched. Decide entre o
+def _run_inference(audio_batch):
+    """
+    Ponto unico de entrada pra rodar o modelo, batched. Decide entre o
     caminho normal (at.inference(), usado por CPU/CUDA/ROCm) e o caminho
-    manual (DirectML), com fallback automatico e permanente para CPU se o
+    manual (DirectML), com fallback automatico e permanente pra CPU se o
     DirectML falhar em qualquer momento.
     """
     global _use_manual_forward, _dml_broken, _device_str, _device_backend, _audio_tagger
@@ -501,9 +474,13 @@ def _run_inference(audio_batch: np.ndarray) -> np.ndarray:
             try:
                 return _forward_on_device(audio_batch)
             except Exception as e:
-                err_msg = repr(e) if isinstance(e, UnicodeDecodeError) else str(e)
+                try:
+                    err_msg = str(e)
+                except UnicodeDecodeError:
+                    err_msg = repr(e)
                 print(f"  [PANNs] DirectML falhou em runtime ({type(e).__name__}: {err_msg}). "
-                      f"Desligando GPU e usando CPU pro resto da sessao.", flush=True)
+                      f"Desligando GPU e usando CPU pro resto da sessao "
+                      f"(provavelmente alguma operacao do modelo nao suportada pelo torch-directml).", flush=True)
                 _dml_broken = True
                 try:
                     _audio_tagger.model.to("cpu")
@@ -511,23 +488,19 @@ def _run_inference(audio_batch: np.ndarray) -> np.ndarray:
                     pass
                 _device_str, _device_backend = "cpu", "cpu"
                 _use_manual_forward = False
+                # cai pro caminho normal abaixo, agora em cpu
 
         with torch.inference_mode():
             clipwise_output, _embedding = _audio_tagger.inference(audio_batch)
         return clipwise_output
 
 
-# ===========================================================================
-# API publica
-# ===========================================================================
-
-def classify_with_panns(audio_path: str, output_language: str = "pt") -> dict[str, Any]:
-    """Executa o modelo PANNs (Cnn14) sobre um arquivo de audio e retorna um
+def classify_with_panns(audio_path, output_language="pt"):
+    """
+    Executa o modelo PANNs (Cnn14) sobre um arquivo de audio e retorna um
     dict no mesmo formato que os outros backends:
 
         {"category": ..., "instrument": ..., "confidence": ..., "notes": ...}
-
-    Usa _pick_label_aggregated() para maxima precisao por agregacao de scores.
     """
     try:
         _ensure_ready()
@@ -543,7 +516,7 @@ def classify_with_panns(audio_path: str, output_language: str = "pt") -> dict[st
         clipwise_output = _run_inference(audio)
         scores = clipwise_output[0]
 
-        category, instrument, confidence = _pick_label_aggregated(scores, output_language)
+        category, instrument, confidence = _pick_label(scores, output_language)
 
         return {
             "category": category,
@@ -556,17 +529,15 @@ def classify_with_panns(audio_path: str, output_language: str = "pt") -> dict[st
         return {"error": f"{type(e).__name__}: {e}"}
 
 
-def classify_many_with_panns(
-    audio_paths: list[str],
-    output_language: str = "pt",
-) -> list[dict[str, Any]]:
-    """Versao em lote de classify_with_panns(): classifica VARIAS faixas em UM
+def classify_many_with_panns(audio_paths, output_language="pt"):
+    """
+    Versao em lote de classify_with_panns(): classifica VARIAS faixas em UM
     UNICO forward pass, em vez de uma chamada por faixa.
 
-    Por que isso importa para performance: cada chamada Python->PyTorch tem
+    Por que isso importa pra performance: cada chamada Python->PyTorch tem
     overhead fixo (lancar kernels, sincronizar, etc.), e em GPU um batch
     grande usa muito mais dos nucleos disponiveis de uma vez do que N
-    chamadas sequenciais de batch=1. Para processar um projeto inteiro do
+    chamadas sequenciais de batch=1. Pra processar um projeto inteiro do
     Reaper (dezenas/centenas de stems), isso e a otimizacao de maior
     impacto depois de acertar o device.
 
@@ -574,8 +545,6 @@ def classify_many_with_panns(
     formato de classify_with_panns(). Se uma faixa individual falhar ao
     carregar (arquivo corrompido etc.), o dict dela vem com "error" mas as
     outras faixas do lote nao sao afetadas.
-
-    Usa _pick_label_aggregated() por precisao maxima.
     """
     try:
         _ensure_ready()
@@ -588,8 +557,8 @@ def classify_many_with_panns(
     if not audio_paths:
         return []
 
-    arrays: list[np.ndarray | None] = []
-    load_errors: dict[int, str] = {}
+    arrays = []
+    load_errors = {}
     for i, path in enumerate(audio_paths):
         try:
             arrays.append(_load_audio_32k_mono(path))
@@ -615,12 +584,12 @@ def classify_many_with_panns(
         err = f"{type(e).__name__}: {e}"
         return [{"error": load_errors.get(i, err)} for i in range(len(audio_paths))]
 
-    results: list[dict[str, Any]] = []
+    results = []
     for i in range(len(audio_paths)):
         if not valid_mask[i]:
             results.append({"error": load_errors.get(i, "falha ao carregar audio")})
             continue
-        category, instrument, confidence = _pick_label_aggregated(clipwise_output[i], output_language)
+        category, instrument, confidence = _pick_label(clipwise_output[i], output_language)
         results.append({
             "category": category,
             "instrument": instrument,
@@ -633,9 +602,6 @@ def classify_many_with_panns(
 if __name__ == "__main__":
     # Teste rapido via linha de comando:
     #   python panns_classify.py caminho/para/audio.wav
-    import sys
-    import json
-
     if len(sys.argv) < 2:
         print("Uso: python panns_classify.py <audio.wav> [--output-language pt|en]")
         sys.exit(1)

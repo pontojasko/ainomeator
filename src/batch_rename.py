@@ -1,600 +1,621 @@
 """
 batch_rename.py
 
-Script principal de batch processing do AiNOMEATOR.
-Le o manifest.tsv gerado pelo Reaper, orquestra a classificacao de todas
-as faixas (local, nuvem ou hibrida), e escreve o result.tsv para o Reaper ler.
+FASE 4: script chamado pelo ReaScript (Lua) de dentro do Reaper.
 
-Executa chamadas a API do Gemini ou modelos locais em paralelo via
-ThreadPoolExecutor, otimizando o tempo total.
+Le um "manifest" (lista de tracks + caminho do audio de cada uma) de um
+arquivo de texto BEM leve (tab-separated, sem JSON/XML), classifica cada
+track EM PARALELO usando threads (as chamadas de API sao I/O-bound - o
+gargalo e rede, nao CPU - entao threads bastam, nao precisa multiprocessing
+nem lidar com GIL) e escreve o resultado em outro arquivo de texto
+igualmente leve, pro Lua ler de volta sem precisar de nenhuma lib de JSON
+dentro do ReaScript.
+
+Formato do manifest (uma linha por track, SEM cabecalho):
+    idx<TAB>caminho_do_audio<TAB>inicio_segundos<TAB>duracao_segundos
+
+    - idx: indice da track no Reaper (0-based), usado so pra casar o
+      resultado de volta com a track certa.
+    - inicio_segundos/duracao_segundos: opcionais. Se informados, restringem
+      a analise a essa janela do arquivo-fonte (ex: onde o item realmente
+      esta, se o arquivo for maior que o item ou compartilhado por varios
+      items/tracks).
+
+Formato do resultado (uma linha por track, SEM cabecalho):
+    idx<TAB>status<TAB>categoria<TAB>instrumento<TAB>confianca<TAB>erro
+
+    status e "ok" ou "erro". Em caso de erro, categoria/instrumento/
+    confianca vem vazios e o campo erro tem a mensagem (tabs/quebras de
+    linha sao trocados por espaco, pra nao quebrar o parser de uma linha
+    so no lado do Lua).
+
+Uso:
+    python batch_rename.py manifest.tsv resultado.tsv \
+        [--workers 5] [--segment-seconds 8] [--models m1,m2,m3]
 """
 
-from __future__ import annotations
+import sys
+import os
+
+# --- Verify dependencies ---
+REQUIRED_PACKAGES = [
+    ("dotenv", "python-dotenv"),
+    ("google.genai", "google-genai"),
+    ("numpy", "numpy"),
+    ("soundfile", "soundfile"),
+    ("panns_inference", "panns-inference"),
+    ("torch", "torch"),
+    ("soxr", "soxr"),
+    ("scipy", "scipy"),
+]
+
+missing_packages = []
+for module_name, pip_name in REQUIRED_PACKAGES:
+    try:
+        __import__(module_name)
+    except ImportError:
+        missing_packages.append(pip_name)
+
+if missing_packages:
+    try:
+        sys.stdout.reconfigure(line_buffering=True, encoding="utf-8", errors="replace")
+    except AttributeError:
+        pass
+    print("\n" + "="*60)
+    print("[ERRO] Dependências do Python ausentes / Missing Python dependencies!")
+    print("="*60)
+    print("As seguintes bibliotecas necessárias não estão instaladas:")
+    for pkg in missing_packages:
+        print(f"  - {pkg}")
+    print("\nPara corrigir, execute o arquivo 'setup.bat' na pasta do projeto.")
+    print("Please run 'setup.bat' in the project directory to install dependencies.")
+    print("="*60 + "\n")
+    sys.exit(1)
 
 import argparse
-import os
-import sys
 import tempfile
-import threading
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, List, Optional, Tuple
 
-import soundfile as sf
+# Garante que cada print() vai pro arquivo de log IMEDIATAMENTE (line-buffered)
+# e em UTF-8, independente do locale do Windows (que usa CP1252 por padrao ao
+# redirecionar stdout para arquivo com >). Sem isso, chars como acentos ou
+# simbolos causam UnicodeEncodeError no redirect do CMD.
+try:
+    sys.stdout.reconfigure(line_buffering=True, encoding="utf-8", errors="replace")
+except AttributeError:
+    # Python < 3.7 nao tem reconfigure(); -u na linha de comando supre
+    pass
+
+from dotenv import load_dotenv
 from google import genai
+from google.genai import types
 
-from _bootstrap import CATEGORIAS_VALIDAS, ERROS_TRANSITORIOS, abort_if_missing, configure_stdout, load_env, safe_float
-from audio_utils import (
-    analyze_dsp_properties,
-    convert_to_mp3_128k,
-    downmix_resample,
-    extract_best_segment,
-    extract_three_peaks,
-)
-from classify_track import build_chaining_prompt, classify_audio_bytes
+from audio_utils import extract_best_segment, downmix_resample, extract_three_peaks, convert_to_mp3_128k
+from classify_track import classify_audio_bytes, MODELOS_FALLBACK, build_chaining_prompt
+from yamnet_classify import classify_with_yamnet
+from essentia_classify import classify_with_essentia
+from panns_classify import classify_with_panns
 
-# Encerra imediatamente se faltarem pacotes obrigatorios
-abort_if_missing()
-
-LOCAL_BACKENDS = ["yamnet", "essentia", "panns"]
-MODELOS_FALLBACK = ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash"]
+# Backends locais (sem API/chave) disponiveis, por nome -> funcao de classificacao.
+# Todos tem a mesma assinatura: classify_fn(audio_path, output_language) -> dict
+LOCAL_BACKENDS = {
+    "yamnet": classify_with_yamnet,
+    "essentia": classify_with_essentia,
+    "panns": classify_with_panns,
+}
 
 
-def _sanitize(text: Any) -> str:
-    """Remove tabs e quebras de linha que quebrariam o formato TSV."""
-    if not text:
+class SharedModelList:
+    def __init__(self, initial_models, output_language="pt"):
+        self.models = list(initial_models)
+        self.output_language = output_language
+
+    def get_models(self):
+        return list(self.models)
+
+    def remove_model(self, model):
+        if model in self.models and len(self.models) > 1:
+            if self.output_language == "pt":
+                print(f"\n  [AVISO] Modelo '{model}' indisponível/falhou! Ativando fallback global de modelo para todas as demais faixas do lote...")
+            else:
+                print(f"\n  [WARNING] Model '{model}' unavailable/failed! Activating global model fallback for all remaining batch tracks...")
+            self.models.remove(model)
+
+
+def check_api_availability(client, models, output_language="pt"):
+    if output_language == "pt":
+        print("\n[batch_rename] Verificando disponibilidade da API Gemini...")
+    else:
+        print("\n[batch_rename] Checking Gemini API availability...")
+    for i, model in enumerate(models):
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=["Responda apenas 'OK'."],
+                config=types.GenerateContentConfig(temperature=0.1)
+            )
+            if response.text:
+                if output_language == "pt":
+                    print(f"  [OK] API disponível (modelo: {model}).")
+                else:
+                    print(f"  [OK] API available (model: {model}).")
+                return True, models[i:]
+        except Exception as e:
+            if output_language == "pt":
+                print(f"  [ERRO] Falhou com {model} ({type(e).__name__}: {e}).")
+            else:
+                print(f"  [ERROR] Failed with {model} ({type(e).__name__}: {e}).")
+    return False, models
+
+
+def _sanitize(text):
+    if text is None:
         return ""
     return str(text).replace("\t", " ").replace("\n", " ").replace("\r", " ").strip()
 
 
-class SharedModelList:
-    """Lista thread-safe de modelos para a cascata de fallback do Gemini.
-    Se uma thread detecta que o flash-lite ta fora do ar, remove da lista pra que
-    as outras threads ja pulem direto pro proximo modelo sem gastar retries atoa.
-    """
-    def __init__(self, initial_models: List[str], output_language: str = "pt"):
-        self.models = list(initial_models)
-        self.output_language = output_language
-        self._lock = threading.Lock()
-
-    def get_models(self) -> List[str]:
-        with self._lock:
-            return list(self.models)
-
-    def remove_model(self, model_name: str) -> None:
-        with self._lock:
-            if model_name in self.models:
-                self.models.remove(model_name)
-                msg = f"  [{model_name} fora do ar globalmente, removido da lista]"
-                if self.output_language == "en":
-                    msg = f"  [{model_name} offline globally, removed from list]"
-                print(msg)
-
-
-def check_api_availability(client: Any, models: List[str], output_language: str = "pt") -> Tuple[bool, List[str]]:
-    """Testa a API do Gemini com um prompt minusculo pra validar a chave e os modelos."""
-    if output_language == "pt":
-        print("[!] Verificando conexao com a API do Gemini...", end=" ", flush=True)
-    else:
-        print("[!] Checking connection to Gemini API...", end=" ", flush=True)
-
-    working_models = []
-    for model in models:
-        try:
-            client.models.generate_content(
-                model=model,
-                contents="responda 'ok' e nada mais",
-                config={"temperature": 0.0}
-            )
-            working_models.append(model)
-            if output_language == "pt":
-                print(f"[{model} OK]", end=" ", flush=True)
-            else:
-                print(f"[{model} OK]", end=" ", flush=True)
-        except Exception as e:
-            erro_str = str(e)
-            if any(marcador in erro_str for marcador in ERROS_TRANSITORIOS):
-                if output_language == "pt":
-                    print(f"[{model} OCUPADO]", end=" ", flush=True)
-                else:
-                    print(f"[{model} BUSY]", end=" ", flush=True)
-                working_models.append(model)
-            else:
-                if output_language == "pt":
-                    print(f"[{model} ERRO PERMANENTE]", end=" ", flush=True)
-                else:
-                    print(f"[{model} FATAL ERROR]", end=" ", flush=True)
-
-    print()
-
-    if not working_models:
-        if output_language == "pt":
-            print("\n[ERRO CRITICO] Nenhum modelo do Gemini respondeu.")
-        else:
-            print("\n[CRITICAL ERROR] No Gemini models responded.")
-        return False, []
-
-    return True, working_models
-
-
-def read_manifest(manifest_path: str) -> List[Tuple[int, str, Optional[float], Optional[float]]]:
-    """Le o manifest gerado pelo Lua (TSV: idx, path, start_sec, dur_sec)."""
-    entries = []
-    with open(manifest_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split("\t")
-            if len(parts) >= 2:
-                idx = int(parts[0])
-                audio_path = parts[1]
-                start_sec = None
-                dur_sec = None
-                if len(parts) >= 4 and parts[2] != "" and parts[3] != "":
-                    try:
-                        start_sec = float(parts[2])
-                        dur_sec = float(parts[3])
-                    except ValueError:
-                        pass
-                entries.append((idx, audio_path, start_sec, dur_sec))
-    return entries
-
-
-def handle_color_generation(client: Any, models: List[str], color_prompt: str, config_path: str, output_language: str = "pt") -> None:
-    """Gera uma paleta de cores customizada via Gemini se solicitado."""
-    if output_language == "pt":
-        print(f"\n[batch_rename] Gerando cores customizadas ('{color_prompt[:30]}...')...")
-    else:
-        print(f"\n[batch_rename] Generating custom colors ('{color_prompt[:30]}...')...")
-
-    prompt = (
-        f"Gere um arquivo INI contendo uma paleta de cores para os seguintes 14 instrumentos musicais/categorias, "
-        f"alem de 'pastas' e 'outro'. A paleta deve ser esteticamente coesa, moderna e harmoniosa, inspirada no seguinte prompt do usuario: '{color_prompt}'. "
-        f"Use cores hexadecimais (ex: #FF0000). Use EXATAMENTE os nomes de chaves abaixo, sem adicionar ou remover nenhum.\n\n"
-        f"O formato da saida DEVE SER EXATAMENTE como este, e NADA mais (nao adicione blocos de markdown, textos explicativos, nem notas. Apenas o conteudo INI):\n\n"
-        f"[Cores]\n"
-        f"vocal_principal = #...\n"
-        f"backing_vocals = #...\n"
-        f"bateria = #...\n"
-        f"percussao = #...\n"
-        f"baixo = #...\n"
-        f"guitarra_eletrica = #...\n"
-        f"violao = #...\n"
-        f"teclado = #...\n"
-        f"synth = #...\n"
-        f"cordas = #...\n"
-        f"sopros = #...\n"
-        f"efeitos = #...\n"
-        f"pastas = #...\n"
-        f"outro = #...\n"
-    )
-
-    for idx_modelo, model in enumerate(models):
-        for tentativa in range(1, 3):
-            try:
-                response = client.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config={"temperature": 0.7}
-                )
-                ini_content = response.text.strip()
-                if ini_content.startswith("```ini"):
-                    ini_content = ini_content[6:]
-                elif ini_content.startswith("```"):
-                    ini_content = ini_content[3:]
-                if ini_content.endswith("```"):
-                    ini_content = ini_content[:-3]
-                ini_content = ini_content.strip()
-
-                with open(config_path, "w", encoding="utf-8") as f:
-                    f.write(f"# Paleta gerada por IA: {color_prompt}\n")
-                    f.write(ini_content + "\n")
-
-                if output_language == "pt":
-                    print(f"  [OK] Paleta gerada e salva em {config_path}")
-                else:
-                    print(f"  [OK] Palette generated and saved to {config_path}")
-                return
-
-            except Exception as e:
-                erro_str = str(e)
-                eh_transitorio = any(marcador in erro_str for marcador in ERROS_TRANSITORIOS)
-                if not eh_transitorio or tentativa == 2:
-                    break
-                time.sleep(2)
-
-        if idx_modelo < len(models) - 1:
-            if output_language == "pt":
-                print(f"  [{model} indisponivel para cores, tentando proximo modelo: {models[idx_modelo + 1]}...]")
-            else:
-                print(f"  [{model} unavailable for colors, trying next model: {models[idx_modelo + 1]}...]")
-
-    if output_language == "pt":
-        print("  [ERRO] Nao foi possivel gerar paleta de cores personalizada. Usando paleta existente.")
-    else:
-        print("  [ERROR] Could not generate custom color palette. Using existing palette.")
-
-
-def check_absolute_silence(audio_path: str, start_sec: Optional[float], dur_sec: Optional[float]) -> bool:
-    """Retorna True se o arquivo tiver 0 frames ou se a leitura revelar pico de energia proximo a zero."""
-    if not os.path.exists(audio_path):
-        return True
+def _process_one_local(idx, audio_path, start_sec, dur_sec, segment_seconds, quality, output_language, backend_name):
+    """Processa UMA track usando um backend local (YamNet/Essentia/PANNs), sem API do Gemini."""
+    classify_fn = LOCAL_BACKENDS[backend_name]
+    tmp_seg_path = None
     try:
-        info = sf.info(audio_path)
-        if info.frames == 0:
-            return True
-        import numpy as np
-        data, _ = sf.read(audio_path, start=0, frames=10000, always_2d=True)
-        if data.shape[0] > 0:
-            max_val = np.max(np.abs(data))
-            if max_val < 1e-6:
-                return True
-    except Exception:
-        pass
-    return False
+        if not audio_path or not os.path.isfile(audio_path):
+            return idx, {"error": f"arquivo nao encontrado: {audio_path}"}
+
+        search_start = start_sec if start_sec is not None and start_sec >= 0 else None
+        search_dur = dur_sec if dur_sec is not None and dur_sec > 0 else None
+
+        if quality == "alta":
+            # Análise detalhada para local: analisa o arquivo/item inteiro em vez de apenas um trecho de 8s
+            if search_start is None and search_dur is None:
+                result = classify_fn(audio_path, output_language=output_language)
+            else:
+                tmp_seg_fd, tmp_seg_path = tempfile.mkstemp(suffix=".wav", prefix="ai_namer_seg_")
+                os.close(tmp_seg_fd)
+                extract_best_segment(
+                    audio_path, tmp_seg_path, segment_seconds=search_dur,
+                    search_start_seconds=search_start,
+                    search_duration_seconds=search_dur,
+                )
+                result = classify_fn(tmp_seg_path, output_language=output_language)
+        else:
+            # Análise rápida: extrai o trecho de 8s de maior energia
+            tmp_seg_fd, tmp_seg_path = tempfile.mkstemp(suffix=".wav", prefix="ai_namer_seg_")
+            os.close(tmp_seg_fd)
+            extract_best_segment(
+                audio_path, tmp_seg_path, segment_seconds=segment_seconds,
+                search_start_seconds=search_start,
+                search_duration_seconds=search_dur,
+            )
+            result = classify_fn(tmp_seg_path, output_language=output_language)
+
+        result["_model_usado"] = backend_name
+        return idx, result
+    except Exception as e:
+        return idx, {"error": f"{type(e).__name__}: {e}"}
+    finally:
+        if tmp_seg_path and os.path.isfile(tmp_seg_path):
+            try:
+                os.remove(tmp_seg_path)
+            except OSError:
+                pass
 
 
-class _TempAudioFiles:
-    """Context manager para garantir a exclusao de arquivos temporarios."""
-    def __init__(self):
-        self.files: List[str] = []
+def analyze_dsp_properties(audio_path):
+    """
+    Carrega o áudio e analisa suas propriedades via DSP básico:
+    1. Concentração de energia abaixo de 100Hz usando FFT.
+    2. Proporção de decaimentos abruptos e contínuos sem sustain (sense of staccato/percussion).
+    """
+    import numpy as np
+    import soundfile as sf
+    try:
+        data, sr = sf.read(audio_path, always_2d=True)
+        # Converter para mono se necessário
+        if data.shape[1] > 1:
+            y = data.mean(axis=1)
+        else:
+            y = data.flatten()
+            
+        if len(y) == 0:
+            return {"low_freq_ratio": 0.0, "low_energy_ratio": 0.0}
 
-    def add(self, path: Optional[str]) -> None:
-        if path:
-            self.files.append(path)
+        # 1. Concentração de energia abaixo de 100Hz
+        # Usamos rfft para sinais reais
+        fft_vals = np.fft.rfft(y)
+        fft_freqs = np.fft.rfftfreq(len(y), d=1/sr)
+        magnitudes = np.abs(fft_vals)
+        energy = magnitudes ** 2
+        total_energy = np.sum(energy)
+        
+        low_freq_ratio = 0.0
+        if total_energy > 0:
+            low_freq_ratio = np.sum(energy[fft_freqs < 100]) / total_energy
 
-    def __enter__(self):
-        return self
+        # 2. Decaimentos abruptos (transiente rápido sem sustain)
+        # Dividimos em blocos de 50ms
+        frame_size = int(0.050 * sr)
+        low_energy_ratio = 0.0
+        if frame_size > 0 and len(y) >= frame_size:
+            num_frames = len(y) // frame_size
+            frames = y[:num_frames * frame_size].reshape((num_frames, frame_size))
+            frame_max = np.max(np.abs(frames), axis=1)
+            global_max = np.max(frame_max)
+            if global_max > 0:
+                # Fração de frames onde a amplitude máxima é menor que 10% do pico absoluto
+                low_energy_ratio = np.sum(frame_max < (0.1 * global_max)) / num_frames
+                
+        return {
+            "low_freq_ratio": float(low_freq_ratio),
+            "low_energy_ratio": float(low_energy_ratio)
+        }
+    except Exception as e:
+        print(f"[DSP ERROR] Falha ao analisar propriedades DSP: {e}")
+        return {"low_freq_ratio": 0.0, "low_energy_ratio": 0.0}
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        for path in self.files:
-            if os.path.isfile(path):
+
+def _process_one_hybrid(client, idx, audio_path, start_sec, dur_sec, shared_models, segment_seconds, quality, api_available, output_language, backend_name):
+    """Processa UMA track usando um algoritmo de analise hibrida que combina PANNs local e Gemini em nuvem."""
+    import numpy as np
+    tmp_seg_path = None
+    tmp_light_path = None
+    tmp_mp3_path = None
+    try:
+        if not audio_path or not os.path.isfile(audio_path):
+            return idx, {"error": f"arquivo nao encontrado: {audio_path}"}
+
+        search_start = start_sec if start_sec is not None and start_sec >= 0 else None
+        search_dur = dur_sec if dur_sec is not None and dur_sec > 0 else None
+
+        # 1. Extração do segmento de áudio de maior energia
+        tmp_seg_fd, tmp_seg_path = tempfile.mkstemp(suffix=".wav", prefix="ai_namer_seg_")
+        os.close(tmp_seg_fd)
+        
+        extract_best_segment(
+            audio_path, tmp_seg_path, segment_seconds=segment_seconds,
+            search_start_seconds=search_start,
+            search_duration_seconds=search_dur,
+        )
+
+        # 2. Analisar propriedades de DSP simples (Verificador de Sanidade)
+        dsp_info = analyze_dsp_properties(tmp_seg_path)
+        low_freq_ratio = dsp_info["low_freq_ratio"]
+        low_energy_ratio = dsp_info["low_energy_ratio"]
+
+        # 3. Preparar áudio bytes para o Gemini
+        if not api_available or not client:
+            # Sem API do Gemini disponível, roda apenas o local PANNs
+            panns_result = classify_with_panns(tmp_seg_path, output_language=output_language)
+            if panns_result and "error" not in panns_result:
+                panns_result["_model_usado"] = "panns_only_no_api"
+                return idx, panns_result
+            return idx, {"error": "API do Gemini nao disponivel e PANNs falhou"}
+
+        # Preparar áudio para a API do Gemini
+        if quality == "alta":
+            with open(tmp_seg_path, "rb") as f:
+                audio_bytes = f.read()
+            mime_type = "audio/wav"
+        else:
+            tmp_mp3_fd, tmp_mp3_path = tempfile.mkstemp(suffix=".mp3", prefix="ai_namer_mp3_")
+            os.close(tmp_mp3_fd)
+            mp3_success = convert_to_mp3_128k(tmp_seg_path, tmp_mp3_path)
+            
+            if mp3_success:
+                with open(tmp_mp3_path, "rb") as f:
+                    audio_bytes = f.read()
+                mime_type = "audio/mp3"
+            else:
+                tmp_light_fd, tmp_light_path = tempfile.mkstemp(suffix=".wav", prefix="ai_namer_light_")
+                os.close(tmp_light_fd)
+                downmix_resample(tmp_seg_path, tmp_light_path)
+                with open(tmp_light_path, "rb") as f:
+                    audio_bytes = f.read()
+                mime_type = "audio/wav"
+
+        current_models = shared_models.get_models()
+        def on_model_failed(model_name):
+            shared_models.remove_model(model_name)
+
+        # 4. Camada de Execução Paralela
+        # Rodar CNN14 (PANNs) e Gemini Flash ao mesmo tempo
+        panns_result = None
+        gemini_result = None
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_panns = executor.submit(classify_with_panns, tmp_seg_path, output_language=output_language)
+            future_gemini = executor.submit(
+                classify_audio_bytes,
+                client, audio_bytes, mime_type=mime_type,
+                models=current_models, on_model_failed=on_model_failed,
+                output_language=output_language
+            )
+            
+            # Aguarda ambos concluírem
+            try:
+                panns_result = future_panns.result()
+            except Exception as e_panns:
+                panns_result = {"error": str(e_panns)}
+                
+            try:
+                gemini_result = future_gemini.result()
+            except Exception as e_gem:
+                gemini_result = {"error": str(e_gem)}
+
+        panns_ok = panns_result and "error" not in panns_result
+        gemini_ok = gemini_result and "error" not in gemini_result
+
+        if not panns_ok and not gemini_ok:
+            # Ambas falharam
+            err_msg = f"CNN14 err: {panns_result.get('error') if panns_result else 'None'}; Gemini err: {gemini_result.get('error') if gemini_result else 'None'}"
+            return idx, {"error": f"Ambas as IAs falharam: {err_msg}"}
+
+        # Se apenas uma IA funcionou, fallback direto para ela
+        if not panns_ok:
+            gemini_result["_model_usado"] = f"gemini_{gemini_result.get('_model_usado', 'hybrid')}_panns_failed"
+            final_res = gemini_result
+            rule_applied = "panns_failed"
+        elif not gemini_ok:
+            panns_result["_model_usado"] = "panns_gemini_failed"
+            final_res = panns_result
+            rule_applied = "gemini_failed"
+        else:
+            # 5. O Árbitro (Matriz de Decisão de Conflitos)
+            p_cat = panns_result.get("category", "").lower()
+            p_inst = panns_result.get("instrument", "").lower()
+            g_cat = gemini_result.get("category", "").lower()
+            g_inst = gemini_result.get("instrument", "").lower()
+
+            # Sanitização robusta dos valores de confiança para evitar NoneType e TypeError
+            try:
+                g_conf = gemini_result.get("confidence")
+                g_conf = float(g_conf) if g_conf is not None and g_conf != "" else 0.5
+            except (ValueError, TypeError):
+                g_conf = 0.5
+
+            try:
+                p_conf = panns_result.get("confidence")
+                p_conf = float(p_conf) if p_conf is not None and p_conf != "" else 0.5
+            except (ValueError, TypeError):
+                p_conf = 0.5
+
+            final_category = gemini_result.get("category")
+            final_instrument = gemini_result.get("instrument")
+            final_confidence = g_conf
+            notes_parts = [f"CNN14={panns_result.get('instrument')}({p_conf})", f"Gemini={gemini_result.get('instrument')}({g_conf})"]
+            rule_applied = "fallback"
+
+            # Fricativas rítmicas: se PANNs achar "vocal" e Gemini achar "shaker" ou percussão
+            shaker_keywords = ["shaker", "chocalho", "cabasa", "maraca", "percuss", "tambourine", "pandeiro", "claves", "castanholas", "caxixi"]
+            is_gemini_shaker = g_cat == "bateria" or any(kw in g_inst for kw in shaker_keywords)
+            
+            # Regra 1: Prioridade Rítmica (vocal vs shaker)
+            if p_cat == "vocal" and is_gemini_shaker:
+                final_category = "bateria"
+                final_instrument = gemini_result.get("instrument") if any(kw in g_inst for kw in ["shaker", "chocalho", "cabasa", "maraca", "pandeiro"]) else ("Shaker" if output_language == "pt" else "Shaker")
+                final_confidence = max(g_conf, p_conf)
+                rule_applied = "prioridade_ritmica"
+
+            # Regra 2: Transiente Grave (Gemini piano vs PANNs baixo/cordas)
+            elif "piano" in g_inst and (p_cat in ["baixo", "cordas"] or any(kw in p_inst for kw in ["baixo", "bass", "cello", "contrabaixo", "double bass"])):
+                final_category = "baixo"
+                final_instrument = "Baixo Pizzicato" if output_language == "pt" else "Pizzicato Bass"
+                final_confidence = p_conf
+                rule_applied = "transiente_grave"
+
+            # Regra 3: Consenso Absoluto (compatibilidade de famílias de instrumentos)
+            else:
+                compatible = False
+                if p_cat == g_cat:
+                    compatible = True
+                elif p_cat in ["cordas", "baixo"] and g_cat in ["cordas", "baixo"]:
+                    compatible = True
+                elif p_cat in ["teclado", "synth"] and g_cat in ["teclado", "synth"]:
+                    compatible = True
+                elif p_cat in ["baixo", "synth"] and g_cat in ["baixo", "synth"]:
+                    compatible = True
+                
+                if compatible:
+                    final_category = gemini_result.get("category")
+                    final_instrument = gemini_result.get("instrument")
+                    final_confidence = max(g_conf, p_conf)
+                    rule_applied = "consenso_absoluto"
+                else:
+                    # Sem consenso e sem regra especial: prioriza o que tem confiança maior ou o Gemini por padrão
+                    if p_conf > 0.75 and p_cat in ["bateria", "baixo", "sopro", "cordas"]:
+                        final_category = panns_result.get("category")
+                        final_instrument = panns_result.get("instrument")
+                        final_confidence = p_conf
+                        rule_applied = "prioridade_cnn14_confiante"
+                    else:
+                        final_category = gemini_result.get("category")
+                        final_instrument = gemini_result.get("instrument")
+                        final_confidence = g_conf
+                        rule_applied = "prioridade_gemini_default"
+
+            final_res = {
+                "category": final_category,
+                "instrument": final_instrument,
+                "confidence": round(float(final_confidence), 3),
+                "notes": f"Arbítrio: {rule_applied} | " + " | ".join(notes_parts)
+            }
+
+        # Garantia final de que a confiança é um float válido e formatado
+        try:
+            final_res["confidence"] = round(float(final_res.get("confidence", 0.5)), 3)
+        except (TypeError, ValueError):
+            final_res["confidence"] = 0.5
+
+        # 6. O Verificador de Sanidade (DSP simples)
+        orig_category = final_res.get("category")
+        orig_instrument = final_res.get("instrument")
+        notes = final_res.get("notes", "")
+
+        # Teste 1: Concentração de graves extrema (< 100Hz)
+        if low_freq_ratio > 0.45:
+            if orig_category not in ["baixo", "bateria"] or not any(kw in (orig_instrument or "").lower() for kw in ["bass", "baixo", "kick", "bumbo", "sub"]):
+                final_res["category"] = "baixo"
+                final_res["instrument"] = "Baixo/Bumbo (DSP Grave <100Hz)" if output_language == "pt" else "Bass/Kick (DSP Low-Freq <100Hz)"
+                final_res["notes"] = notes + f" | [DSP Override: Grave (F={low_freq_ratio:.2f})]"
+                print(f"  [DSP Override] Track {idx}: Grave extremo forçou categoria baixo (low_freq_ratio={low_freq_ratio:.2f})")
+
+        # Teste 2: Decaimentos abruptos e contínuos sem sustain
+        elif low_energy_ratio > 0.75:
+            if orig_category != "bateria" and not any(kw in (orig_instrument or "").lower() for kw in ["perc", "shaker", "drum", "hat", "hit"]):
+                final_res["category"] = "bateria"
+                final_res["instrument"] = "Percussão (DSP Transiente Curto)" if output_language == "pt" else "Percussion (DSP Short Transient)"
+                final_res["notes"] = notes + f" | [DSP Override: Percussivo (S={low_energy_ratio:.2f})]"
+                print(f"  [DSP Override] Track {idx}: Decaimento abrupto forçou percussão (low_energy_ratio={low_energy_ratio:.2f})")
+
+        final_res["_model_usado"] = f"hybrid_{rule_applied}"
+        return idx, final_res
+
+    except Exception as e:
+        return idx, {"error": f"{type(e).__name__}: {e}"}
+    finally:
+        for p in (tmp_seg_path, tmp_light_path, tmp_mp3_path):
+            if p and os.path.isfile(p):
                 try:
-                    os.remove(path)
+                    os.remove(p)
+                except OSError:
+                    pass
+
+def _process_one_chaining(client, idx, audio_path, start_sec, dur_sec, shared_models, segment_seconds, quality, api_available, output_language):
+    """
+    Processa UMA track usando a verdadeira arquitetura de Chaining:
+    1. Roda PANNs localmente.
+    2. Envia o áudio para o Gemini junto com o contexto/previsão do PANNs para review.
+    """
+    tmp_seg_path = None
+    tmp_light_path = None
+    tmp_mp3_path = None
+    try:
+        if not audio_path or not os.path.isfile(audio_path):
+            return idx, {"error": f"arquivo nao encontrado: {audio_path}"}
+
+        search_start = start_sec if start_sec is not None and start_sec >= 0 else None
+        search_dur = dur_sec if dur_sec is not None and dur_sec > 0 else None
+
+        tmp_seg_fd, tmp_seg_path = tempfile.mkstemp(suffix=".wav", prefix="ai_namer_seg_")
+        os.close(tmp_seg_fd)
+        
+        extract_best_segment(
+            audio_path, tmp_seg_path, segment_seconds=segment_seconds,
+            search_start_seconds=search_start,
+            search_duration_seconds=search_dur,
+        )
+
+        # Roda o PANNs localmente
+        panns_result = classify_with_panns(tmp_seg_path, output_language=output_language)
+        
+        if not api_available or not client:
+            if panns_result and "error" not in panns_result:
+                panns_result["_model_usado"] = "panns_only_no_api"
+                return idx, panns_result
+            return idx, {"error": "API do Gemini nao disponivel e PANNs falhou"}
+
+        # PANNs pode ter falhado
+        if panns_result and "error" in panns_result:
+            print(f"  [Chaining] PANNs falhou na track {idx}: {panns_result['error']}. Tentando apenas com Gemini.")
+            panns_result = {"category": "desconhecida", "instrument": "falha na analise local", "confidence": 0.0}
+
+        # Preparar áudio para a API do Gemini
+        if quality == "alta":
+            with open(tmp_seg_path, "rb") as f:
+                audio_bytes = f.read()
+            mime_type = "audio/wav"
+        else:
+            tmp_mp3_fd, tmp_mp3_path = tempfile.mkstemp(suffix=".mp3", prefix="ai_namer_mp3_")
+            os.close(tmp_mp3_fd)
+            mp3_success = convert_to_mp3_128k(tmp_seg_path, tmp_mp3_path)
+            
+            if mp3_success:
+                with open(tmp_mp3_path, "rb") as f:
+                    audio_bytes = f.read()
+                mime_type = "audio/mp3"
+            else:
+                tmp_light_fd, tmp_light_path = tempfile.mkstemp(suffix=".wav", prefix="ai_namer_light_")
+                os.close(tmp_light_fd)
+                downmix_resample(tmp_seg_path, tmp_light_path)
+                with open(tmp_light_path, "rb") as f:
+                    audio_bytes = f.read()
+                mime_type = "audio/wav"
+
+        current_models = shared_models.get_models()
+        def on_model_failed(model_name):
+            shared_models.remove_model(model_name)
+
+        # Monta o prompt dinâmico usando o resultado do PANNs
+        chaining_prompt = build_chaining_prompt(panns_result, output_language=output_language)
+
+        # Envia pro Gemini com o prompt especializado
+        gemini_result = classify_audio_bytes(
+            client, audio_bytes, mime_type=mime_type,
+            models=current_models, on_model_failed=on_model_failed,
+            output_language=output_language,
+            custom_prompt=chaining_prompt
+        )
+
+        if gemini_result and "error" not in gemini_result:
+            gemini_result["_model_usado"] = "hybrid_chaining_review"
+            return idx, gemini_result
+        else:
+            # Fallback para o PANNs se Gemini falhar
+            panns_result["_model_usado"] = "panns_gemini_failed"
+            return idx, panns_result
+
+    except Exception as e:
+        return idx, {"error": f"{type(e).__name__}: {e}"}
+    finally:
+        for p in (tmp_seg_path, tmp_light_path, tmp_mp3_path):
+            if p and os.path.isfile(p):
+                try:
+                    os.remove(p)
                 except OSError:
                     pass
 
 
-def _prepare_audio_segment(
-    audio_path: str,
-    start_sec: Optional[float],
-    dur_sec: Optional[float],
-    segment_seconds: float,
-    quality: str,
-    tmp_files: _TempAudioFiles
-) -> Tuple[str, bytes, str]:
-    """Corta o audio e prepara os bytes (wav ou mp3) para a API."""
-    search_start = start_sec if start_sec is not None and start_sec >= 0 else None
-    search_dur = dur_sec if dur_sec is not None and dur_sec > 0 else None
-
-    tmp_seg_fd, tmp_seg_path = tempfile.mkstemp(suffix=".wav", prefix="ai_namer_seg_")
-    os.close(tmp_seg_fd)
-    tmp_files.add(tmp_seg_path)
-
-    if quality == "alta":
-        extract_best_segment(
-            audio_path, tmp_seg_path, segment_seconds=segment_seconds,
-            search_start_seconds=search_start, search_duration_seconds=search_dur,
-        )
-        with open(tmp_seg_path, "rb") as f:
-            audio_bytes = f.read()
-        return tmp_seg_path, audio_bytes, "audio/wav"
-    else:
-        extract_three_peaks(
-            audio_path, tmp_seg_path, search_start_seconds=search_start,
-            search_duration_seconds=search_dur, segment_seconds=4
-        )
-        tmp_mp3_fd, tmp_mp3_path = tempfile.mkstemp(suffix=".mp3", prefix="ai_namer_mp3_")
-        os.close(tmp_mp3_fd)
-        tmp_files.add(tmp_mp3_path)
-
-        if convert_to_mp3_128k(tmp_seg_path, tmp_mp3_path):
-            with open(tmp_mp3_path, "rb") as f:
-                audio_bytes = f.read()
-            return tmp_seg_path, audio_bytes, "audio/mp3"
-        else:
-            tmp_light_fd, tmp_light_path = tempfile.mkstemp(suffix=".wav", prefix="ai_namer_light_")
-            os.close(tmp_light_fd)
-            tmp_files.add(tmp_light_path)
-            downmix_resample(tmp_seg_path, tmp_light_path)
-            with open(tmp_light_path, "rb") as f:
-                audio_bytes = f.read()
-            return tmp_seg_path, audio_bytes, "audio/wav"
-
-
-def _process_one_local(
-    idx: int, audio_path: str, start_sec: Optional[float], dur_sec: Optional[float],
-    segment_seconds: float, quality: str, output_language: str, backend_name: str
-) -> Tuple[int, Dict[str, Any]]:
-    """Processa UMA track com backends puramente locais (yamnet, essentia, panns).
-    Nota: no fluxo batch, panns usa classify_many_with_panns (otimizado) fora desta funcao.
-    Esta funcao so cobre os outros locais ou chamadas individuais.
+def check_absolute_silence(audio_path, start_sec=None, dur_sec=None):
     """
-    with _TempAudioFiles() as tmp:
-        try:
-            if not audio_path or not os.path.isfile(audio_path):
-                return idx, {"error": f"arquivo nao encontrado: {audio_path}"}
+    Retorna True se o áudio (ou o trecho especificado) for silêncio absoluto
+    (pico máximo < -120dB / 1e-6).
+    """
+    try:
+        import soundfile as sf
+        import numpy as np
+        
+        info = sf.info(audio_path)
+        if info.frames == 0:
+            return True
             
-            # Corta o segmento exato
-            tmp_seg_path, _, _ = _prepare_audio_segment(audio_path, start_sec, dur_sec, segment_seconds, "alta", tmp)
+        start_frame = 0
+        if start_sec is not None and start_sec >= 0:
+            start_frame = int(start_sec * info.samplerate)
             
-            if backend_name == "yamnet":
-                from yamnet_classify import classify_with_yamnet
-                return idx, classify_with_yamnet(tmp_seg_path, output_language=output_language)
-            elif backend_name == "essentia":
-                from essentia_classify import classify_with_essentia
-                return idx, classify_with_essentia(tmp_seg_path, output_language=output_language)
-            elif backend_name == "panns":
-                from panns_classify import classify_with_panns
-                return idx, classify_with_panns(tmp_seg_path, output_language=output_language)
-            else:
-                return idx, {"error": f"backend local desconhecido: {backend_name}"}
-
-        except Exception as e:
-            return idx, {"error": f"{type(e).__name__}: {e}"}
-
-
-def _arbitrate(panns_result: Dict[str, Any], gemini_result: Dict[str, Any], output_language: str) -> Tuple[str, str, float, str]:
-    """Arbitro (Matriz de Decisao) para resolver conflitos entre PANNs e Gemini."""
-    p_cat = panns_result.get("category", "").lower()
-    p_inst = panns_result.get("instrument", "").lower()
-    g_cat = gemini_result.get("category", "").lower()
-    g_inst = gemini_result.get("instrument", "").lower()
-
-    g_conf = safe_float(gemini_result.get("confidence"), 0.5)
-    p_conf = safe_float(panns_result.get("confidence"), 0.5)
-
-    final_category = gemini_result.get("category", "outro")
-    final_instrument = gemini_result.get("instrument", "")
-    final_confidence = g_conf
-    notes_parts = [f"CNN14={panns_result.get('instrument')}({p_conf})", f"Gemini={gemini_result.get('instrument')}({g_conf})"]
-    rule_applied = "fallback"
-
-    shaker_keywords = ["shaker", "chocalho", "cabasa", "maraca", "percuss", "tambourine", "pandeiro", "claves", "castanholas", "caxixi"]
-    is_gemini_shaker = g_cat == "bateria" or any(kw in g_inst for kw in shaker_keywords)
-
-    if p_cat == "vocal" and is_gemini_shaker:
-        final_category = "bateria"
-        final_instrument = gemini_result.get("instrument") if any(kw in g_inst for kw in ["shaker", "chocalho", "cabasa", "maraca", "pandeiro"]) else ("Shaker" if output_language == "pt" else "Shaker")
-        final_confidence = max(g_conf, p_conf)
-        rule_applied = "prioridade_ritmica"
-
-    elif "piano" in g_inst and (p_cat in ["baixo", "cordas"] or any(kw in p_inst for kw in ["baixo", "bass", "cello", "contrabaixo", "double bass"])):
-        final_category = "baixo"
-        final_instrument = "Baixo Pizzicato" if output_language == "pt" else "Pizzicato Bass"
-        final_confidence = p_conf
-        rule_applied = "transiente_grave"
-
-    else:
-        compatible = False
-        if p_cat == g_cat:
-            compatible = True
-        elif p_cat in ["cordas", "baixo"] and g_cat in ["cordas", "baixo"]:
-            compatible = True
-        elif p_cat in ["teclado", "synth"] and g_cat in ["teclado", "synth"]:
-            compatible = True
-        elif p_cat in ["baixo", "synth"] and g_cat in ["baixo", "synth"]:
-            compatible = True
-
-        if compatible:
-            final_category = gemini_result.get("category", "outro")
-            final_instrument = gemini_result.get("instrument", "")
-            final_confidence = max(g_conf, p_conf)
-            rule_applied = "consenso_absoluto"
-        else:
-            if p_conf > 0.75 and p_cat in ["bateria", "baixo", "sopro", "cordas"]:
-                final_category = panns_result.get("category", "outro")
-                final_instrument = panns_result.get("instrument", "")
-                final_confidence = p_conf
-                rule_applied = "prioridade_cnn14_confiante"
-            else:
-                final_category = gemini_result.get("category", "outro")
-                final_instrument = gemini_result.get("instrument", "")
-                final_confidence = g_conf
-                rule_applied = "prioridade_gemini_default"
-
-    return final_category, final_instrument, round(final_confidence, 3), rule_applied
-
-
-def _process_one_hybrid(
-    client: Any, idx: int, audio_path: str, start_sec: Optional[float], dur_sec: Optional[float],
-    shared_models: SharedModelList, segment_seconds: float, quality: str, api_available: bool,
-    output_language: str, backend_name: str
-) -> Tuple[int, Dict[str, Any]]:
-    """Processa UMA track combinando PANNs local e Gemini em nuvem."""
-    with _TempAudioFiles() as tmp:
-        try:
-            if not audio_path or not os.path.isfile(audio_path):
-                return idx, {"error": f"arquivo nao encontrado: {audio_path}"}
-
-            tmp_seg_path, audio_bytes, mime_type = _prepare_audio_segment(
-                audio_path, start_sec, dur_sec, segment_seconds, quality, tmp
-            )
-            dsp_info = analyze_dsp_properties(tmp_seg_path)
-            low_freq_ratio = dsp_info["low_freq_ratio"]
-            low_energy_ratio = dsp_info["low_energy_ratio"]
-
-            from panns_classify import classify_with_panns
-
-            if not api_available or not client:
-                panns_result = classify_with_panns(tmp_seg_path, output_language=output_language)
-                if panns_result and "error" not in panns_result:
-                    panns_result["_model_usado"] = "panns_only_no_api"
-                    return idx, panns_result
-                return idx, {"error": "API do Gemini nao disponivel e PANNs falhou"}
-
-            current_models = shared_models.get_models()
-
-            panns_result = None
-            gemini_result = None
-
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                future_panns = executor.submit(classify_with_panns, tmp_seg_path, output_language=output_language)
-                future_gemini = executor.submit(
-                    classify_audio_bytes,
-                    client, audio_bytes, mime_type=mime_type,
-                    models=current_models, on_model_failed=shared_models.remove_model,
-                    output_language=output_language
-                )
-                
-                try:
-                    panns_result = future_panns.result()
-                except Exception as e_panns:
-                    panns_result = {"error": str(e_panns)}
-                    
-                try:
-                    gemini_result = future_gemini.result()
-                except Exception as e_gem:
-                    gemini_result = {"error": str(e_gem)}
-
-            panns_ok = panns_result and "error" not in panns_result
-            gemini_ok = gemini_result and "error" not in gemini_result
-
-            if not panns_ok and not gemini_ok:
-                err_msg = f"CNN14 err: {panns_result.get('error') if panns_result else 'None'}; Gemini err: {gemini_result.get('error') if gemini_result else 'None'}"
-                return idx, {"error": f"Ambas as IAs falharam: {err_msg}"}
-
-            if not panns_ok:
-                gemini_result["_model_usado"] = f"gemini_{gemini_result.get('_model_usado', 'hybrid')}_panns_failed"
-                final_res = gemini_result
-                rule_applied = "panns_failed"
-            elif not gemini_ok:
-                panns_result["_model_usado"] = "panns_gemini_failed"
-                final_res = panns_result
-                rule_applied = "gemini_failed"
-            else:
-                f_cat, f_inst, f_conf, rule_applied = _arbitrate(panns_result, gemini_result, output_language)
-                notes_parts = [f"CNN14={panns_result.get('instrument')}", f"Gemini={gemini_result.get('instrument')}"]
-                final_res = {
-                    "category": f_cat,
-                    "instrument": f_inst,
-                    "confidence": f_conf,
-                    "notes": f"Arbítrio: {rule_applied} | " + " | ".join(notes_parts)
-                }
-
-            final_res["confidence"] = safe_float(final_res.get("confidence"), 0.5)
-
-            # Verificador de Sanidade (DSP)
-            orig_category = final_res.get("category")
-            orig_instrument = final_res.get("instrument")
-            notes = final_res.get("notes", "")
-
-            if low_freq_ratio > 0.45:
-                if orig_category not in ["baixo", "bateria"] or not any(kw in (orig_instrument or "").lower() for kw in ["bass", "baixo", "kick", "bumbo", "sub"]):
-                    final_res["category"] = "baixo"
-                    final_res["instrument"] = "Baixo/Bumbo (DSP Grave <100Hz)" if output_language == "pt" else "Bass/Kick (DSP Low-Freq <100Hz)"
-                    final_res["notes"] = notes + f" | [DSP Override: Grave (F={low_freq_ratio:.2f})]"
-            elif low_energy_ratio > 0.75:
-                if orig_category != "bateria" and not any(kw in (orig_instrument or "").lower() for kw in ["perc", "shaker", "drum", "hat", "hit"]):
-                    final_res["category"] = "bateria"
-                    final_res["instrument"] = "Percussão (DSP Transiente Curto)" if output_language == "pt" else "Percussion (DSP Short Transient)"
-                    final_res["notes"] = notes + f" | [DSP Override: Percussivo (S={low_energy_ratio:.2f})]"
-
-            final_res["_model_usado"] = f"hybrid_{rule_applied}"
-            return idx, final_res
-
-        except Exception as e:
-            return idx, {"error": f"{type(e).__name__}: {e}"}
-
-
-def _process_one_chaining(
-    client: Any, idx: int, audio_path: str, start_sec: Optional[float], dur_sec: Optional[float],
-    shared_models: SharedModelList, segment_seconds: float, quality: str, api_available: bool,
-    output_language: str
-) -> Tuple[int, Dict[str, Any]]:
-    """Processa UMA track com a arquitetura de Chaining (PANNs + DSP -> Gemini)."""
-    with _TempAudioFiles() as tmp:
-        try:
-            if not audio_path or not os.path.isfile(audio_path):
-                return idx, {"error": f"arquivo nao encontrado: {audio_path}"}
-
-            tmp_seg_path, audio_bytes, mime_type = _prepare_audio_segment(
-                audio_path, start_sec, dur_sec, segment_seconds, quality, tmp
-            )
+        frames_to_read = -1
+        if dur_sec is not None and dur_sec > 0:
+            frames_to_read = int(dur_sec * info.samplerate)
             
-            # 1. Roda PANNs
-            from panns_classify import classify_with_panns
-            panns_result = classify_with_panns(tmp_seg_path, output_language=output_language)
+        if start_frame >= info.frames:
+            return True
             
-            if not api_available or not client:
-                if panns_result and "error" not in panns_result:
-                    panns_result["_model_usado"] = "panns_only_no_api"
-                    return idx, panns_result
-                return idx, {"error": "API do Gemini nao disponivel e PANNs falhou"}
-
-            if panns_result and "error" in panns_result:
-                print(f"  [Chaining] PANNs falhou na track {idx}: {panns_result['error']}. Tentando apenas com Gemini.")
-                panns_result = {"category": "desconhecida", "instrument": "falha na analise local", "confidence": 0.0}
-
-            # 2. Analise DSP
-            dsp_info = analyze_dsp_properties(tmp_seg_path)
+        data, sr = sf.read(audio_path, start=start_frame, frames=frames_to_read, always_2d=True)
+        if len(data) == 0:
+            return True
             
-            # 3. Monta o prompt dinamico injetando resultados do PANNs e DSP
-            chaining_prompt = build_chaining_prompt(panns_result, output_language=output_language)
-            
-            dsp_context = (
-                f"\n\n[ANÁLISE DSP ESPECTRAL]\n"
-                f"Concentração de Graves (<100Hz): {dsp_info['low_freq_ratio']:.2f} (Valores >0.4 indicam bumbo, baixo, 808)\n"
-                f"Transientes Curtos (Decaimento Abrupto): {dsp_info['low_energy_ratio']:.2f} (Valores >0.7 indicam percussão pura sem ressonância)\n"
-            )
-            if output_language == "en":
-                dsp_context = (
-                    f"\n\n[SPECTRAL DSP ANALYSIS]\n"
-                    f"Low Frequency Concentration (<100Hz): {dsp_info['low_freq_ratio']:.2f} (Values >0.4 indicate kick drum, bass, 808)\n"
-                    f"Short Transients (Abrupt Decay): {dsp_info['low_energy_ratio']:.2f} (Values >0.7 indicate pure percussion without resonance)\n"
-                )
-            
-            chaining_prompt += dsp_context
-
-            current_models = shared_models.get_models()
-            gemini_result = classify_audio_bytes(
-                client, audio_bytes, mime_type=mime_type,
-                models=current_models, on_model_failed=shared_models.remove_model,
-                output_language=output_language,
-                custom_prompt=chaining_prompt
-            )
-
-            if gemini_result and "error" not in gemini_result:
-                gemini_result["_model_usado"] = "hybrid_chaining_review"
-                return idx, gemini_result
-            else:
-                panns_result["_model_usado"] = "panns_gemini_failed"
-                return idx, panns_result
-
-        except Exception as e:
-            return idx, {"error": f"{type(e).__name__}: {e}"}
+        max_val = np.max(np.abs(data))
+        if max_val < 1e-6:  # -120dB
+            return True
+        return False
+    except Exception:
+        # Em caso de falha (ex: codec de MP3 não suportado), deixa o fluxo continuar
+        return False
 
 
-def _process_one_gemini(
-    client: Any, idx: int, audio_path: str, start_sec: Optional[float], dur_sec: Optional[float],
-    shared_models: SharedModelList, segment_seconds: float, quality: str, output_language: str
-) -> Tuple[int, Dict[str, Any]]:
-    """Processa UMA track exclusivamente com a API do Gemini."""
-    with _TempAudioFiles() as tmp:
-        try:
-            if not audio_path or not os.path.isfile(audio_path):
-                return idx, {"error": f"arquivo nao encontrado: {audio_path}"}
-            
-            _, audio_bytes, mime_type = _prepare_audio_segment(
-                audio_path, start_sec, dur_sec, segment_seconds, quality, tmp
-            )
-            
-            result = classify_audio_bytes(
-                client, audio_bytes, mime_type=mime_type,
-                models=shared_models.get_models(), on_model_failed=shared_models.remove_model,
-                output_language=output_language
-            )
-            return idx, result
-        except Exception as e:
-            return idx, {"error": f"{type(e).__name__}: {e}"}
-
-
-def process_one(
-    client: Any, idx: int, audio_path: str, start_sec: Optional[float], dur_sec: Optional[float],
-    shared_models: SharedModelList, segment_seconds: float, quality: str, api_available: bool,
-    output_language: str, backend: str = "gemini", cancel_flag: Optional[str] = None
-) -> Tuple[int, Dict[str, Any]]:
+def process_one(client, idx, audio_path, start_sec, dur_sec, shared_models, segment_seconds, quality, api_available, output_language, backend="gemini", cancel_flag=None):
+    import os
     if cancel_flag and os.path.exists(cancel_flag):
         return idx, {"error": "cancelled"}
         
@@ -603,20 +624,199 @@ def process_one(
         
     if backend in LOCAL_BACKENDS:
         return _process_one_local(idx, audio_path, start_sec, dur_sec, segment_seconds, quality, output_language, backend)
-    elif backend == "hybrid_heuristic":
+    if backend == "hybrid_heuristic":
         return _process_one_hybrid(client, idx, audio_path, start_sec, dur_sec, shared_models, segment_seconds, quality, api_available, output_language, backend)
-    elif backend == "hybrid_chaining":
+    if backend == "hybrid_chaining":
         return _process_one_chaining(client, idx, audio_path, start_sec, dur_sec, shared_models, segment_seconds, quality, api_available, output_language)
+    if not api_available:
+        return idx, {"category": "outro", "instrument": "Audio", "confidence": 0.0, "_model_usado": "fallback_universal"}
+
+    """Processa UMA track: corta o trecho correspondente, tenta comprimir para MP3 128kbps,
+    caso falhe usa o fallback WAV adequado, e manda para o Gemini."""
+    tmp_seg_fd, tmp_seg_path = tempfile.mkstemp(suffix=".wav", prefix="ai_namer_seg_")
+    os.close(tmp_seg_fd)
+    tmp_light_fd, tmp_light_path = tempfile.mkstemp(suffix=".wav", prefix="ai_namer_light_")
+    os.close(tmp_light_fd)
+    tmp_mp3_fd, tmp_mp3_path = tempfile.mkstemp(suffix=".mp3", prefix="ai_namer_mp3_")
+    os.close(tmp_mp3_fd)
+
+    try:
+        if not audio_path or not os.path.isfile(audio_path):
+            return idx, {"error": f"arquivo nao encontrado: {audio_path}"}
+
+        search_start = start_sec if start_sec is not None and start_sec >= 0 else None
+        search_dur = dur_sec if dur_sec is not None and dur_sec > 0 else None
+
+        if quality == "alta":
+            # Análise detalhada: sem remover silêncios, mantendo a qualidade original (wav)
+            extract_best_segment(
+                audio_path, tmp_seg_path, segment_seconds=segment_seconds,
+                search_start_seconds=search_start,
+                search_duration_seconds=search_dur,
+            )
+            with open(tmp_seg_path, "rb") as f:
+                audio_bytes = f.read()
+            mime_type = "audio/wav"
+        else:
+            # Análise rápida: pega 3 trechos de pico de 4s cada (12s total)
+            extract_three_peaks(
+                audio_path, tmp_seg_path,
+                search_start_seconds=search_start,
+                search_duration_seconds=search_dur,
+                segment_seconds=4
+            )
+
+            # Tenta converter para MP3 128kbps
+            mp3_success = convert_to_mp3_128k(tmp_seg_path, tmp_mp3_path)
+            
+            if mp3_success:
+                with open(tmp_mp3_path, "rb") as f:
+                    audio_bytes = f.read()
+                mime_type = "audio/mp3"
+            else:
+                # Fallback para WAV caso ffmpeg nao esteja disponivel
+                # WAV leve 24kHz mono
+                downmix_resample(tmp_seg_path, tmp_light_path)
+                    
+                with open(tmp_light_path, "rb") as f:
+                    audio_bytes = f.read()
+                mime_type = "audio/wav"
+
+        current_models = shared_models.get_models()
+        def on_model_failed(model_name):
+            shared_models.remove_model(model_name)
+
+        result = classify_audio_bytes(
+            client, audio_bytes, mime_type=mime_type,
+            models=current_models, on_model_failed=on_model_failed,
+            output_language=output_language
+        )
+        return idx, result
+    except Exception as e:
+        return idx, {"error": f"{type(e).__name__}: {e}"}
+    finally:
+        for p in (tmp_seg_path, tmp_light_path, tmp_mp3_path):
+            try:
+                if os.path.isfile(p):
+                    os.remove(p)
+            except OSError:
+                pass
+
+
+def read_manifest(path):
+    entries = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n").rstrip("\r")
+            if not line.strip():
+                continue
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            idx = int(parts[0])
+            audio_path = parts[1]
+            start_sec = float(parts[2]) if len(parts) > 2 and parts[2] != "" else None
+            dur_sec = float(parts[3]) if len(parts) > 3 and parts[3] != "" else None
+            entries.append((idx, audio_path, start_sec, dur_sec))
+    return entries
+
+
+def generate_colors_ini(client, model, prompt_text):
+    system_prompt = (
+        "Voce e um designer de cores profissional para Estacoes de Audio Digital (DAWs).\n"
+        "O usuario deseja personalizar a paleta de cores das faixas do Reaper com base no seguinte pedido:\n"
+        f"\"{prompt_text}\"\n\n"
+        "Crie uma paleta de cores coerente, elegante e profissional em formato INI.\n"
+        "Gere exatamente as 14 chaves abaixo sob a secao [Cores] com valores HEX (ex: #E05A47):\n"
+        "- vocal_principal (Vocal principal / lead)\n"
+        "- backing_vocals (Backing vocals, dobras, coro)\n"
+        "- bateria (Bateria principal / pecas)\n"
+        "- percussao (Percussao secundaria, pandeiro, shaker)\n"
+        "- baixo (Baixo eletrico ou acustico)\n"
+        "- guitarra_eletrica (Guitarras eletricas bases/solos)\n"
+        "- violao (Violao acustico, nylon, aco, ukulele, banjo)\n"
+        "- teclado (Teclado, piano acustico, rhodes, wurlitzer)\n"
+        "- synth (Sintetizadores, pads, arpeggios)\n"
+        "- cordas (Seçao de cordas orquestrais, violino, cello)\n"
+        "- sopros (Metais e sopros, sax, trompete, trombone)\n"
+        "- efeitos (Canais auxiliares de efeitos, reverb, delay, FX)\n"
+        "- pastas (Canais pai / folders / busses que agrupam tracks)\n"
+        "- outro (Cor padrao / outros instrumentos nao identificados)\n\n"
+        "Diretrizes:\n"
+        "1. As cores devem ser profissionais e faceis de ler no Reaper (evite cores muito brilhantes de fundo ou que dificultem ver os nomes).\n"
+        "2. Mantenha uma diferenca visual clara entre instrumentos parecidos (ex: vocal_principal deve se destacar mais que backing_vocals, violao diferente de guitarra, bateria diferente de percussao).\n"
+        "3. Mesmo se o pedido for 'tudo em verde', use tons, saturacoes e brilhos diferentes de verde para cada instrumento, para que continuem distinguiveis.\n"
+        "4. Responda APENAS com a estrutura do arquivo INI sob a secao [Cores]. Nao inclua blocos de codigo markdown, nao inclua nenhuma explicacao ou texto extra."
+    )
+
+    response = client.models.generate_content(
+        model=model,
+        contents=[system_prompt],
+        config=types.GenerateContentConfig(
+            temperature=0.3,
+        ),
+    )
+    text = response.text.strip()
+    
+    if "```" in text:
+        parts = text.split("```")
+        for part in parts:
+            if "[Cores]" in part or "vocal_principal" in part:
+                lines = part.strip().split("\n")
+                if lines and (lines[0].strip() == "ini" or lines[0].strip() == "txt" or lines[0].strip() == "toml"):
+                    lines.pop(0)
+                text = "\n".join(lines).strip()
+                break
+                
+    return text
+
+
+def handle_color_generation(client, models, prompt_text, config_path, output_language="pt"):
+    if output_language == "pt":
+        print(f"\n[batch_rename] Gerando paleta de cores personalizada com o prompt: \"{prompt_text}\"...")
     else:
-        if not api_available:
-            return idx, {"category": "outro", "instrument": "Audio", "confidence": 0.0, "_model_usado": "fallback_universal"}
-        return _process_one_gemini(client, idx, audio_path, start_sec, dur_sec, shared_models, segment_seconds, quality, output_language)
+        print(f"\n[batch_rename] Generating custom color palette with prompt: \"{prompt_text}\"...")
+    ERROS_TRANSITORIOS = ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "DeadlineExceeded", "timeout")
+    
+    for idx_modelo, model in enumerate(models):
+        for tentativa in range(1, 3):
+            try:
+                ini_content = generate_colors_ini(client, model, prompt_text)
+                
+                if "[Cores]" not in ini_content and "vocal_principal" not in ini_content:
+                    raise ValueError("Resposta do modelo nao contem secao [Cores] ou chaves esperadas." if output_language == "pt" else "Model response does not contain [Cores] section or expected keys.")
+                
+                with open(config_path, "w", encoding="utf-8") as f:
+                    f.write(ini_content)
+                
+                if output_language == "pt":
+                    print(f"  [OK] Nova paleta de cores salva com sucesso em: {config_path}")
+                else:
+                    print(f"  [OK] New color palette successfully saved in: {config_path}")
+                return
+                
+            except Exception as e:
+                erro_str = f"{type(e).__name__}: {e}"
+                eh_transitorio = any(marcador in erro_str for marcador in ERROS_TRANSITORIOS)
+                
+                if not eh_transitorio or tentativa == 2:
+                    break
+                
+                time.sleep(2)
+                
+        if idx_modelo < len(models) - 1:
+            if output_language == "pt":
+                print(f"  [{model} indisponivel para cores, tentando proximo modelo: {models[idx_modelo + 1]}...]")
+            else:
+                print(f"  [{model} unavailable for colors, trying next model: {models[idx_modelo + 1]}...]")
+            
+    if output_language == "pt":
+        print(f"  [ERRO] Nao foi possivel gerar paleta de cores personalizada. Usando paleta existente.")
+    else:
+        print(f"  [ERROR] Could not generate custom color palette. Using existing palette.")
 
 
 def main():
-    configure_stdout()
-    load_env()
-    
     parser = argparse.ArgumentParser(description="Classifica varias tracks em paralelo (chamado pelo ReaScript)")
     parser.add_argument("manifest_path")
     parser.add_argument("result_path")
@@ -643,12 +843,16 @@ def main():
                          help="threads internas do PyTorch (PANNs) por worker")
     args = parser.parse_args()
 
+    load_dotenv()
+    _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+    _PARENT_ENV = os.path.join(os.path.dirname(_SCRIPT_DIR), ".env")
+    if os.path.exists(_PARENT_ENV):
+        load_dotenv(_PARENT_ENV)
     if args.panns_threads is not None and args.panns_threads > 0:
         os.environ["PANNS_THREADS"] = str(args.panns_threads)
-    
     api_key = os.environ.get("GEMINI_API_KEY")
+
     use_local_backend = (args.backend in LOCAL_BACKENDS)
-    client = None
 
     if not use_local_backend:
         if not api_key:
@@ -661,6 +865,7 @@ def main():
             sys.exit(1)
         client = genai.Client(api_key=api_key)
     else:
+        client = None
         if args.output_language == "pt":
             print(f"[batch_rename] Backend: {args.backend} (local, sem API)")
         else:
@@ -674,8 +879,10 @@ def main():
         sys.exit(1)
 
     if not use_local_backend:
+        client = genai.Client(api_key=api_key)
         models = args.models.split(",") if args.models else None
         initial_models = models if models else MODELOS_FALLBACK
+
         api_available, working_models = check_api_availability(client, initial_models, output_language=args.output_language)
         if not api_available:
             if args.output_language == "pt":
@@ -684,9 +891,10 @@ def main():
                 print("\n[WARNING] Initial check failed. Activating universal fallback (no AI) for all steps.")
         initial_models = working_models
     else:
-        api_available = True
+        api_available = True  # backends locais sao sempre "available" (rodam na maquina)
         initial_models = [args.backend]
 
+        # Se o prompt de cores foi informado, gera a paleta antes do processamento das faixas
     if args.color_prompt and args.config_path:
         if api_available and not use_local_backend:
             handle_color_generation(client, initial_models, args.color_prompt, args.config_path, output_language=args.output_language)
@@ -723,76 +931,33 @@ def main():
     results = {}
     t0 = time.time()
     done = 0
+
     cancel_flag = args.done_flag.replace("done_", "cancel_") if args.done_flag else None
 
-    # OTIMIZAÇÃO MASSIVA PARA PANNS PURO:
-    # Em vez de inferir track a track em threads, lemos tudo em paralelo e rodamos 1 forward pass
-    if args.backend == "panns":
-        print(f"  [PANNs] Preparando {total} faixas para batch inference (processamento muito mais rapido)...")
-        prepared_paths = {}
-        tmp_manager = _TempAudioFiles()
-        
-        # 1. Extrair os trechos em paralelo (I/O)
-        with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
-            futures = {}
-            for idx, path, start, dur in entries:
-                if cancel_flag and os.path.exists(cancel_flag):
-                    break
-                if check_absolute_silence(path, start, dur):
-                    results[idx] = {"error": "absolute_silence"}
-                    continue
-                # Agenda o corte de wav (qualidade alta para PANNs)
-                fut = pool.submit(_prepare_audio_segment, path, start, dur, args.segment_seconds, "alta", tmp_manager)
-                futures[fut] = idx
-            
-            for fut in as_completed(futures):
-                idx = futures[fut]
+    with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
+        futures = {
+            pool.submit(process_one, client, idx, path, start, dur, shared_models, args.segment_seconds, args.quality, api_available, args.output_language, args.backend, cancel_flag): idx
+            for idx, path, start, dur in entries
+        }
+        for future in as_completed(futures):
+            if cancel_flag and os.path.exists(cancel_flag):
+                print("Cancellation detected. Stopping.")
+                break
+            idx, result = future.result()
+            results[idx] = result
+            done += 1
+            if "error" in result:
+                print(f"✖ trk {idx:02d} │ error     → {result['error']}")
+            else:
+                category = result.get('category', 'other')
+                if category == 'outro':
+                    category = 'other'
+                instrument = result.get('instrument', '')
                 try:
-                    seg_path, _, _ = fut.result()
-                    prepared_paths[idx] = seg_path
-                except Exception as e:
-                    results[idx] = {"error": f"{type(e).__name__}: {e}"}
-
-        # 2. Roda a Inferencia em Batch (1 chamada para GPU)
-        valid_indices = list(prepared_paths.keys())
-        valid_paths = [prepared_paths[i] for i in valid_indices]
-        
-        if valid_paths and not (cancel_flag and os.path.exists(cancel_flag)):
-            from panns_classify import classify_many_with_panns
-            panns_res = classify_many_with_panns(valid_paths, output_language=args.output_language)
-            for i, res in enumerate(panns_res):
-                results[valid_indices[i]] = res
-        
-        # Limpa temporarios
-        tmp_manager.__exit__(None, None, None)
-        
-        for idx in [e[0] for e in entries]:
-            if idx not in results:
-                results[idx] = {"error": "cancelado ou pulado"}
-
-    # FLUXO NORMAL (Thread Pool com API ou outros locais)
-    else:
-        with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
-            futures = {
-                pool.submit(process_one, client, idx, path, start, dur, shared_models, args.segment_seconds, args.quality, api_available, args.output_language, args.backend, cancel_flag): idx
-                for idx, path, start, dur in entries
-            }
-            for future in as_completed(futures):
-                if cancel_flag and os.path.exists(cancel_flag):
-                    print("Cancellation detected. Stopping.")
-                    break
-                idx, result = future.result()
-                results[idx] = result
-                done += 1
-                if "error" in result:
-                    print(f"✖ trk {idx:02d} │ error     → {result['error']}")
-                else:
-                    category = result.get('category', 'other')
-                    if category == 'outro':
-                        category = 'other'
-                    instrument = result.get('instrument', '')
-                    conf = safe_float(result.get('confidence'), 0.0) * 100
-                    print(f"✔ trk {idx:02d} │ {category:<9} → {instrument:<21} │ conf: {conf:04.1f}%")
+                    conf = float(result.get('confidence', 0)) * 100
+                except (ValueError, TypeError):
+                    conf = 0.0
+                print(f"✔ trk {idx:02d} │ {category:<9} → {instrument:<21} │ conf: {conf:04.1f}%")
 
     with open(args.result_path, "w", encoding="utf-8") as f:
         for idx, path, start, dur in entries:
@@ -811,6 +976,9 @@ def main():
     elapsed = time.time() - t0
     print(f"› analysis completed in {elapsed:.1f}s")
 
+    # Cria o arquivo sentinela APOS gravar o result.tsv por completo.
+    # O Lua faz polling nesse arquivo pra saber que pode ler o resultado sem
+    # risco de pegar uma escrita parcial.
     if args.done_flag:
         with open(args.done_flag, "w") as f:
             f.write("done")

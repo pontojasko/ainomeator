@@ -28,9 +28,6 @@ import sys
 import json
 import threading
 import urllib.request
-from typing import Any, Tuple
-
-import numpy as np
 
 # --- Download/cache dos modelos TensorFlow do Essentia --------------------
 
@@ -42,7 +39,7 @@ _EMBEDDING_MODEL_URL = "https://essentia.upf.edu/models/feature-extractors/disco
 _HEAD_MODEL_URL = "https://essentia.upf.edu/models/classification-heads/mtg_jamendo_instrument/mtg_jamendo_instrument-discogs-effnet-1.pb"
 
 
-def _ensure_models() -> Tuple[str, str]:
+def _ensure_models():
     """Baixa os dois arquivos .pb do Essentia se ainda nao existirem localmente."""
     os.makedirs(_MODEL_DIR, exist_ok=True)
     if not os.path.isfile(_EMBEDDING_MODEL_PATH):
@@ -118,7 +115,7 @@ _embedding_extractor = None
 _classification_head = None
 
 
-def _get_models() -> Tuple[Any, Any]:
+def _get_models():
     global _embedding_extractor, _classification_head
     with _model_lock:
         if _embedding_extractor is None or _classification_head is None:
@@ -129,7 +126,7 @@ def _get_models() -> Tuple[Any, Any]:
     return _embedding_extractor, _classification_head
 
 
-def classify_with_essentia(audio_path: str, output_language: str = "pt") -> dict[str, Any]:
+def classify_with_essentia(audio_path, output_language="pt"):
     """
     Executa o pipeline Essentia (embeddings EffNet-Discogs + cabeca de
     instrumentos do MTG-Jamendo) sobre um arquivo de audio e retorna um
@@ -164,6 +161,7 @@ def classify_with_essentia(audio_path: str, output_language: str = "pt") -> dict
         embeddings = embedding_extractor(audio)
         predictions = classification_head(embeddings)
 
+        import numpy as np
         mean_scores = np.mean(predictions, axis=0)
         best_idx = int(np.argmax(mean_scores))
         best_tag = _INSTRUMENT_TAGS[best_idx]
