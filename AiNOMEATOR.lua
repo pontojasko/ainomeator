@@ -980,6 +980,12 @@ local function start_analysis()
   end
   mf:close()
 
+  local analysis_start_time = reaper.time_precise()
+  local function log_t(msg)
+    local elapsed = reaper.time_precise() - analysis_start_time
+    log(string.format("%s [%.2fs]", msg, elapsed))
+  end
+
   if DEBUG then
     reaper.ShowConsoleMsg("")  -- garante que o console abre
   end
@@ -987,7 +993,7 @@ local function start_analysis()
   log("│ ainomeator by jasko                                                        │")
   log("╰──────────────────────────────────────────────────────────╯")
   log("")
-  log("[ setup ]")
+  log_t("[ setup ]")
   if not venv_exists then
     log(t("msg_venv_missing"))
     log(t("msg_venv_hint"))
@@ -997,7 +1003,7 @@ local function start_analysis()
   if current_theme == "custom" and color_prompt ~= "" then
     profile_name = "colors_prompt.ini"
   end
-  log("› profile  : " .. profile_name)
+  log_t("› profile  : " .. profile_name)
   local backend_name = backend
   if backend == "panns" then
     backend_name = "panns (local/cnn14)"
@@ -1008,19 +1014,22 @@ local function start_analysis()
   elseif backend == "hybrid_chaining" then
     backend_name = "hybrid_chaining (PANNs + Gemini review)"
   end
-  log("› backend  : " .. backend_name)
+  log_t("› backend  : " .. backend_name)
   local device_str = "cpu (checkpoint loaded)"
   if backend == "gemini" then
     device_str = "cloud api"
   end
-  log("› device   : " .. device_str)
+  log_t("› device   : " .. device_str)
   local target_str = string.format("%d tracks | %d thread | %s mode", n_jobs, workers, (analysis_mode == "detailed" and "detailed" or "fast"))
-  log("› target   : " .. target_str)
+  log_t("› target   : " .. target_str)
 
   local local_threads = tonumber(inputs[3].val) or 1
+  
+  -- Calcula o tempo gasto ate o momento do disparo do script Python
+  local setup_offset = reaper.time_precise() - analysis_start_time
   local python_args = string.format(
-    '-u "%s" "%s" "%s" --workers %d --segment-seconds %.2f --done-flag "%s" --config-path "%s" --panns-threads %d',
-    batch_script, manifest_path, result_path, workers, segment_seconds, done_path, config_colors_file, local_threads
+    '-u "%s" "%s" "%s" --workers %d --segment-seconds %.2f --done-flag "%s" --config-path "%s" --panns-threads %d --start-offset %.4f',
+    batch_script, manifest_path, result_path, workers, segment_seconds, done_path, config_colors_file, local_threads, setup_offset
   )
 
   if analysis_mode == "detailed" then
@@ -1052,11 +1061,11 @@ local function start_analysis()
 
   if backend == "panns" or backend == "hybrid_heuristic" or backend == "hybrid_chaining" then
     if lang == "pt" then
-      log("  [!] Inicializando modelo PANNs (~300MB)...")
-      log("  [!] Pode demorar de 10 a 30 segundos na primeira execução...")
+      log_t("  [!] Inicializando modelo PANNs (~300MB)...")
+      log_t("  [!] Pode demorar de 10 a 30 segundos na primeira execução...")
     else
-      log("  [!] Initializing PANNs model (~300MB)...")
-      log("  [!] This might take 10 to 30 seconds on the first run...")
+      log_t("  [!] Initializing PANNs model (~300MB)...")
+      log_t("  [!] This might take 10 to 30 seconds on the first run...")
     end
   end
 

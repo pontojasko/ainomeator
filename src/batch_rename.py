@@ -691,8 +691,6 @@ def handle_color_generation(client, models, prompt_text, config_path, output_lan
 # ---------------------------------------------------------------------------
 
 def main():
-    global t_start_global
-    t_start_global = time.time()
     parser = argparse.ArgumentParser(description="Classifica varias tracks em paralelo (chamado pelo ReaScript)")
     parser.add_argument("manifest_path")
     parser.add_argument("result_path")
@@ -717,9 +715,13 @@ def main():
                         help="backend de classificacao")
     parser.add_argument("--panns-threads", type=int, default=None,
                         help="threads internas do PyTorch (PANNs) por worker")
+    parser.add_argument("--start-offset", type=float, default=0.0,
+                        help="tempo decorrido no ReaScript (Lua) antes do Python inicializar")
     args = parser.parse_args()
 
     # --- Env / config ---
+    global t_start_global
+    t_start_global = time.time() - args.start_offset
     load_dotenv()
     _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
     _PARENT_ENV = os.path.join(os.path.dirname(_SCRIPT_DIR), ".env")
