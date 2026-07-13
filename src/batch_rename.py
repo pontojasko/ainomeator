@@ -691,6 +691,8 @@ def handle_color_generation(client, models, prompt_text, config_path, output_lan
 # ---------------------------------------------------------------------------
 
 def main():
+    global t_start_global
+    t_start_global = time.time()
     parser = argparse.ArgumentParser(description="Classifica varias tracks em paralelo (chamado pelo ReaScript)")
     parser.add_argument("manifest_path")
     parser.add_argument("result_path")
@@ -820,7 +822,7 @@ def main():
                 break
             if check_absolute_silence(audio_path, start_sec, dur_sec):
                 results[idx] = {"error": "absolute_silence"}
-                print(f"✖ trk {idx:02d} │ silence")
+                print(f"✖ trk {idx:02d} │ silence [{time.time() - t_start_global:.1f}s]")
                 continue
             valid_entries.append((idx, audio_path, start_sec, dur_sec))
 
@@ -877,11 +879,11 @@ def main():
                         pass
 
             # Log resultados
-            panns_elapsed = time.time() - t0
             for idx in [e[0] for e in valid_entries]:
                 r = results.get(idx, {"error": "sem resultado"})
+                elapsed_global = time.time() - t_start_global
                 if "error" in r:
-                    print(f"✖ trk {idx:02d} │ error     → {r['error']} [{panns_elapsed:.1f}s]")
+                    print(f"✖ trk {idx:02d} │ error     → {r['error']} [{elapsed_global:.1f}s]")
                 else:
                     category = r.get("category", "other")
                     if category == "outro":
@@ -891,18 +893,16 @@ def main():
                         conf = float(r.get("confidence", 0)) * 100
                     except (ValueError, TypeError):
                         conf = 0.0
-                    print(f"✔ trk {idx:02d} │ {category:<9} → {instrument:<21} │ conf: {conf:04.1f}% [{panns_elapsed:.1f}s]")
+                    print(f"✔ trk {idx:02d} │ {category:<9} → {instrument:<21} │ conf: {conf:04.1f}% [{elapsed_global:.1f}s]")
 
     # -----------------------------------------------------------------------
     # Gemini / Hybrid: ThreadPoolExecutor por track (I/O-bound)
     # -----------------------------------------------------------------------
     else:
         done = 0
-        start_times = {}
         with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
             futures = {}
             for idx, path, start, dur in entries:
-                start_times[idx] = time.time()
                 f = pool.submit(process_one, client, idx, path, start, dur, shared_models,
                                 args.segment_seconds, args.quality, api_available,
                                 args.output_language, args.backend, cancel_flag)
@@ -912,12 +912,12 @@ def main():
                     print("Cancellation detected. Stopping.")
                     break
                 idx = futures[future]
-                elapsed_track = time.time() - start_times[idx]
+                elapsed_global = time.time() - t_start_global
                 _, result = future.result()
                 results[idx] = result
                 done += 1
                 if "error" in result:
-                    print(f"✖ trk {idx:02d} │ error     → {result['error']} [{elapsed_track:.1f}s]")
+                    print(f"✖ trk {idx:02d} │ error     → {result['error']} [{elapsed_global:.1f}s]")
                 else:
                     category = result.get("category", "other")
                     if category == "outro":
@@ -927,7 +927,7 @@ def main():
                         conf = float(result.get("confidence", 0)) * 100
                     except (ValueError, TypeError):
                         conf = 0.0
-                    print(f"✔ trk {idx:02d} │ {category:<9} → {instrument:<21} │ conf: {conf:04.1f}% [{elapsed_track:.1f}s]")
+                    print(f"✔ trk {idx:02d} │ {category:<9} → {instrument:<21} │ conf: {conf:04.1f}% [{elapsed_global:.1f}s]")
 
     # --- Write result TSV ---
     with open(args.result_path, "w", encoding="utf-8") as f:
