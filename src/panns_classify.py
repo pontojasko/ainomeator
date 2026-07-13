@@ -584,13 +584,30 @@ def classify_many_with_panns(audio_inputs, output_language="pt"):
     if not valid_lens:
         return [{"error": load_errors.get(i, "falha ao carregar audio")} for i in range(len(audio_inputs))]
 
-    max_len = max(valid_lens)
-    batch = np.zeros((len(arrays), max_len), dtype=np.float32)
+    MAX_SAMPLES = 32000 * 10  # 10 segundos por chunk
+    flat_chunks = []
+    chunk_to_track_idx = []
     valid_mask = [False] * len(arrays)
+
     for i, a in enumerate(arrays):
-        if a is not None:
-            batch[i, :a.shape[0]] = a
+        if a is not None and a.shape[0] > 0:
             valid_mask[i] = True
+            total_samples = a.shape[0]
+            num_chunks = int(np.ceil(total_samples / MAX_SAMPLES))
+            for c in range(num_chunks):
+                start = c * MAX_SAMPLES
+                end = min(total_samples, (c + 1) * MAX_SAMPLES)
+                chunk_data = a[start:end]
+                
+                padded = np.zeros(MAX_SAMPLES, dtype=np.float32)
+                padded[:chunk_data.shape[0]] = chunk_data
+                flat_chunks.append(padded)
+                chunk_to_track_idx.append(i)
+
+    if not flat_chunks:
+        return [{"error": "falha ao carregar audio"} for _ in range(len(audio_inputs))]
+
+    batch = np.array(flat_chunks, dtype=np.float32)
 
     clipwise_output_list = []
     chunk_size = batch.shape[0]  # Try processing the whole batch to maximize GPU usage!
@@ -605,7 +622,7 @@ def classify_many_with_panns(audio_inputs, output_language="pt"):
             err_lower = str(e).lower()
             if ("memory" in err_lower or "allocate" in err_lower or "oom" in err_lower) and chunk_size > 1:
                 chunk_size = chunk_size // 2
-                print(f"  [PANNs] DirectML/GPU OOM. Reduzindo lote para {chunk_size} faixas simultaneas...", flush=True)
+                print(f"  [PANNs] DirectML/GPU OOM. Reduzindo lote para {chunk_size} recortes simultaneos...", flush=True)
             else:
                 err = f"{type(e).__name__}: {e}"
                 return [{"error": load_errors.get(idx, err)} for idx in range(len(audio_inputs))]
@@ -615,12 +632,19 @@ def classify_many_with_panns(audio_inputs, output_language="pt"):
 
     clipwise_output = np.concatenate(clipwise_output_list, axis=0) if clipwise_output_list else np.empty((0, 527))
 
+    # Reagrupa os chunks calculados de volta para cada faixa (media dos scores)
+    track_outputs = {idx: [] for idx in range(len(audio_inputs))}
+    for c_idx, t_idx in enumerate(chunk_to_track_idx):
+        track_outputs[t_idx].append(clipwise_output[c_idx])
+
     results = []
     for i in range(len(audio_inputs)):
-        if not valid_mask[i]:
+        if not valid_mask[i] or len(track_outputs[i]) == 0:
             results.append({"error": load_errors.get(i, "falha ao carregar audio")})
             continue
-        category, instrument, confidence = _pick_label(clipwise_output[i], output_language)
+        
+        avg_scores = np.mean(track_outputs[i], axis=0)
+        category, instrument, confidence = _pick_label(avg_scores, output_language)
         results.append({
             "category": category,
             "instrument": instrument,
