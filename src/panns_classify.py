@@ -88,7 +88,6 @@ numero de faixas. As otimizacoes abaixo atacam exatamente isso:
 import os
 import sys
 import json
-import math
 import threading
 import numpy as np
 
@@ -495,12 +494,16 @@ def _run_inference(audio_batch):
         return clipwise_output
 
 
-def classify_with_panns(audio_path, output_language="pt"):
+def classify_with_panns(audio_input, output_language="pt"):
     """
-    Executa o modelo PANNs (Cnn14) sobre um arquivo de audio e retorna um
-    dict no mesmo formato que os outros backends:
+    Executa o modelo PANNs (Cnn14) sobre um arquivo de audio ou um array NumPy
+    e retorna um dict no mesmo formato que os outros backends:
 
         {"category": ..., "instrument": ..., "confidence": ..., "notes": ...}
+
+    audio_input: str (caminho para arquivo) OU np.ndarray (audio ja carregado
+        em mono 32kHz float32 — evita releitura do disco quando o segmento
+        ja foi extraido em memoria por outro modulo).
     """
     try:
         _ensure_ready()
@@ -510,7 +513,10 @@ def classify_with_panns(audio_path, output_language="pt"):
         return {"error": f"falha ao inicializar PANNs: {type(e).__name__}: {e}"}
 
     try:
-        data = _load_audio_32k_mono(audio_path)
+        if isinstance(audio_input, np.ndarray):
+            data = np.ascontiguousarray(audio_input, dtype=np.float32)
+        else:
+            data = _load_audio_32k_mono(audio_input)
         audio = data[None, :]  # (batch_size=1, samples)
 
         clipwise_output = _run_inference(audio)
@@ -529,7 +535,7 @@ def classify_with_panns(audio_path, output_language="pt"):
         return {"error": f"{type(e).__name__}: {e}"}
 
 
-def classify_many_with_panns(audio_paths, output_language="pt"):
+def classify_many_with_panns(audio_inputs, output_language="pt"):
     """
     Versao em lote de classify_with_panns(): classifica VARIAS faixas em UM
     UNICO forward pass, em vez de uma chamada por faixa.
@@ -541,7 +547,10 @@ def classify_many_with_panns(audio_paths, output_language="pt"):
     Reaper (dezenas/centenas de stems), isso e a otimizacao de maior
     impacto depois de acertar o device.
 
-    Retorna uma lista de dicts, na MESMA ORDEM de `audio_paths`, no mesmo
+    audio_inputs: lista de str (caminhos) OU np.ndarray (arrays ja carregados
+        em mono 32kHz float32). Pode misturar os dois tipos na mesma lista.
+
+    Retorna uma lista de dicts, na MESMA ORDEM de `audio_inputs`, no mesmo
     formato de classify_with_panns(). Se uma faixa individual falhar ao
     carregar (arquivo corrompido etc.), o dict dela vem com "error" mas as
     outras faixas do lote nao sao afetadas.
@@ -550,25 +559,28 @@ def classify_many_with_panns(audio_paths, output_language="pt"):
         _ensure_ready()
     except ImportError:
         return [{"error": "panns_inference/torch nao instalado. Rode: pip install panns_inference torch"}
-                for _ in audio_paths]
+                for _ in audio_inputs]
     except Exception as e:
-        return [{"error": f"falha ao inicializar PANNs: {type(e).__name__}: {e}"} for _ in audio_paths]
+        return [{"error": f"falha ao inicializar PANNs: {type(e).__name__}: {e}"} for _ in audio_inputs]
 
-    if not audio_paths:
+    if not audio_inputs:
         return []
 
     arrays = []
     load_errors = {}
-    for i, path in enumerate(audio_paths):
+    for i, item in enumerate(audio_inputs):
         try:
-            arrays.append(_load_audio_32k_mono(path))
+            if isinstance(item, np.ndarray):
+                arrays.append(np.ascontiguousarray(item, dtype=np.float32))
+            else:
+                arrays.append(_load_audio_32k_mono(item))
         except Exception as e:
             arrays.append(None)
             load_errors[i] = f"{type(e).__name__}: {e}"
 
     valid_lens = [a.shape[0] for a in arrays if a is not None]
     if not valid_lens:
-        return [{"error": load_errors.get(i, "falha ao carregar audio")} for i in range(len(audio_paths))]
+        return [{"error": load_errors.get(i, "falha ao carregar audio")} for i in range(len(audio_inputs))]
 
     max_len = max(valid_lens)
     batch = np.zeros((len(arrays), max_len), dtype=np.float32)
@@ -582,10 +594,10 @@ def classify_many_with_panns(audio_paths, output_language="pt"):
         clipwise_output = _run_inference(batch)
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
-        return [{"error": load_errors.get(i, err)} for i in range(len(audio_paths))]
+        return [{"error": load_errors.get(i, err)} for i in range(len(audio_inputs))]
 
     results = []
-    for i in range(len(audio_paths)):
+    for i in range(len(audio_inputs)):
         if not valid_mask[i]:
             results.append({"error": load_errors.get(i, "falha ao carregar audio")})
             continue
