@@ -833,16 +833,23 @@ def main():
                 search_start = start_sec if start_sec is not None and start_sec >= 0 else None
                 search_dur = dur_sec if dur_sec is not None and dur_sec > 0 else None
                 try:
-                    if args.quality == "alta" and search_start is None and search_dur is None:
-                        return idx, audio_path, None  # usa arquivo direto, sem temp
                     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".wav", prefix="ai_namer_seg_")
                     os.close(tmp_fd)
-                    extract_best_segment(
-                        audio_path, tmp_path,
-                        segment_seconds=search_dur if args.quality == "alta" else args.segment_seconds,
-                        search_start_seconds=search_start,
-                        search_duration_seconds=search_dur,
-                    )
+                    
+                    if args.quality == "alta":
+                        extract_three_peaks(
+                            audio_path, tmp_path, 
+                            search_start_seconds=search_start,
+                            search_duration_seconds=search_dur,
+                            segment_seconds=4
+                        )
+                    else:
+                        extract_best_segment(
+                            audio_path, tmp_path,
+                            segment_seconds=args.segment_seconds,
+                            search_start_seconds=search_start,
+                            search_duration_seconds=search_dur,
+                        )
                     return idx, tmp_path, tmp_path  # (idx, path_para_panns, path_temp_para_remover)
                 except Exception as e:
                     return idx, None, None
