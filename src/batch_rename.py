@@ -877,10 +877,11 @@ def main():
                         pass
 
             # Log resultados
+            panns_elapsed = time.time() - t0
             for idx in [e[0] for e in valid_entries]:
                 r = results.get(idx, {"error": "sem resultado"})
                 if "error" in r:
-                    print(f"✖ trk {idx:02d} │ error     → {r['error']}")
+                    print(f"✖ trk {idx:02d} │ error     → {r['error']} [{panns_elapsed:.1f}s]")
                 else:
                     category = r.get("category", "other")
                     if category == "outro":
@@ -890,29 +891,33 @@ def main():
                         conf = float(r.get("confidence", 0)) * 100
                     except (ValueError, TypeError):
                         conf = 0.0
-                    print(f"✔ trk {idx:02d} │ {category:<9} → {instrument:<21} │ conf: {conf:04.1f}%")
+                    print(f"✔ trk {idx:02d} │ {category:<9} → {instrument:<21} │ conf: {conf:04.1f}% [{panns_elapsed:.1f}s]")
 
     # -----------------------------------------------------------------------
     # Gemini / Hybrid: ThreadPoolExecutor por track (I/O-bound)
     # -----------------------------------------------------------------------
     else:
         done = 0
+        start_times = {}
         with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
-            futures = {
-                pool.submit(process_one, client, idx, path, start, dur, shared_models,
-                            args.segment_seconds, args.quality, api_available,
-                            args.output_language, args.backend, cancel_flag): idx
-                for idx, path, start, dur in entries
-            }
+            futures = {}
+            for idx, path, start, dur in entries:
+                start_times[idx] = time.time()
+                f = pool.submit(process_one, client, idx, path, start, dur, shared_models,
+                                args.segment_seconds, args.quality, api_available,
+                                args.output_language, args.backend, cancel_flag)
+                futures[f] = idx
             for future in as_completed(futures):
                 if cancel_flag and os.path.exists(cancel_flag):
                     print("Cancellation detected. Stopping.")
                     break
-                idx, result = future.result()
+                idx = futures[future]
+                elapsed_track = time.time() - start_times[idx]
+                _, result = future.result()
                 results[idx] = result
                 done += 1
                 if "error" in result:
-                    print(f"✖ trk {idx:02d} │ error     → {result['error']}")
+                    print(f"✖ trk {idx:02d} │ error     → {result['error']} [{elapsed_track:.1f}s]")
                 else:
                     category = result.get("category", "other")
                     if category == "outro":
@@ -922,7 +927,7 @@ def main():
                         conf = float(result.get("confidence", 0)) * 100
                     except (ValueError, TypeError):
                         conf = 0.0
-                    print(f"✔ trk {idx:02d} │ {category:<9} → {instrument:<21} │ conf: {conf:04.1f}%")
+                    print(f"✔ trk {idx:02d} │ {category:<9} → {instrument:<21} │ conf: {conf:04.1f}% [{elapsed_track:.1f}s]")
 
     # --- Write result TSV ---
     with open(args.result_path, "w", encoding="utf-8") as f:
