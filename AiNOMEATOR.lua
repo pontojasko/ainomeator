@@ -1014,6 +1014,8 @@ local inputs
 
 
 local function import_track_media_cues(track)
+  if not track or not reaper.ValidatePtr(track, "MediaTrack*") then return end
+
   -- 1. Salvar seleção atual de itens
   local selected_items = {}
   local num_sel_items = reaper.CountSelectedMediaItems(0)
