@@ -587,7 +587,13 @@ def classify_many_with_panns(audio_inputs, output_language="pt"):
             valid_mask[i] = True
 
     try:
-        clipwise_output = _run_inference(batch)
+        CHUNK_SIZE = 2
+        clipwise_output_list = []
+        for i in range(0, batch.shape[0], CHUNK_SIZE):
+            chunk = batch[i : i + CHUNK_SIZE]
+            chunk_out = _run_inference(chunk)
+            clipwise_output_list.append(chunk_out)
+        clipwise_output = np.concatenate(clipwise_output_list, axis=0) if clipwise_output_list else np.empty((0, 527))
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
         return [{"error": load_errors.get(i, err)} for i in range(len(audio_inputs))]
