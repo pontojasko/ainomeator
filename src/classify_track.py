@@ -17,57 +17,22 @@ Requisitos:
     Variavel de ambiente GEMINI_API_KEY definida (ou arquivo .env na mesma pasta)
 """
 
-import sys
-import os
-
-# --- Verify dependencies ---
-REQUIRED_PACKAGES = [
-    ("dotenv", "python-dotenv"),
-    ("google.genai", "google-genai"),
-    ("numpy", "numpy"),
-    ("soundfile", "soundfile"),
-    ("panns_inference", "panns-inference"),
-    ("torch", "torch"),
-    ("soxr", "soxr"),
-    ("scipy", "scipy"),
-]
-
-missing_packages = []
-for module_name, pip_name in REQUIRED_PACKAGES:
-    try:
-        __import__(module_name)
-    except ImportError:
-        missing_packages.append(pip_name)
-
-if missing_packages:
-    print("\n" + "="*60)
-    print("[ERRO] Dependências do Python ausentes / Missing Python dependencies!")
-    print("="*60)
-    print("As seguintes bibliotecas necessárias não estão instaladas:")
-    for pkg in missing_packages:
-        print(f"  - {pkg}")
-    print("\nPara corrigir, execute o arquivo 'setup.bat' na pasta do projeto.")
-    print("Please run 'setup.bat' in the project directory to install dependencies.")
-    print("="*60 + "\n")
-    sys.exit(1)
-
-import json
 import argparse
-import time
+import json
+import os
+import sys
 import tempfile
+import time
+from typing import Any, Callable, Dict, List, Optional
 
-from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-from audio_utils import extract_best_segment, downmix_resample
+from _bootstrap import CATEGORIAS_VALIDAS, ERROS_TRANSITORIOS, abort_if_missing
+from audio_utils import downmix_resample, extract_best_segment
 
-# Categorias permitidas -> mantém o vocabulário fechado para não vir
-# "guitar-like instrument with reverb" ou outras respostas fora do padrão
-CATEGORIAS_VALIDAS = [
-    "vocal", "guitarra", "baixo", "bateria",
-    "teclado", "synth", "sopro", "cordas", "outro"
-]
+# Abort se faltar dependencias
+abort_if_missing()
 
 # Ordem de preferencia: tenta o primeiro, se estiver sobrecarregado (503)
 # cai pro proximo. Cada modelo roda em cluster de capacidade separado no
@@ -77,11 +42,6 @@ CATEGORIAS_VALIDAS = [
 # musicais (articulacoes, timbres hibridos, instrumentos polifonicos vs
 # monofonicos). A diferenca de latencia pro flash-lite e pequena e compensa
 # pela reducao de erros de classificacao em trechos ambiguos.
-load_dotenv()
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PARENT_ENV = os.path.join(os.path.dirname(_SCRIPT_DIR), ".env")
-if os.path.exists(_PARENT_ENV):
-    load_dotenv(_PARENT_ENV)
 
 # Tenta ler do .env os modelos preferidos pelo usuário, caso contrário usa a ordem padrão
 model_env = os.environ.get("GEMINI_MODELS")
@@ -108,6 +68,8 @@ Atencao a armadilhas comuns de articulacao e timbre:
 - Bateria de verdade produz sons SEM altura musical definida (bumbo, caixa, hi-hat, pratos). Se ha notas musicais claras, mesmo com ataque percussivo, NAO classifique como bateria.
 - Se um instrumento tipicamente monofonico (flauta, sax, trompete) estiver tocando acordes ou multiplas notas simultaneas, provavelmente e um sampler ou synth imitando o timbre desse instrumento. Use category "synth" ou "teclado" e descreva no campo instrument o timbre e a funcao ritmica/harmonica (ex: 'synth ritmico com timbre de flauta', 'sampler de sopro em acordes').
 - Sempre priorize a PRESENCA OU AUSENCIA DE NOTAS MUSICAIS AFINADAS como criterio principal para distinguir bateria de outros instrumentos.
+- NUNCA inclua palavras como "mono" ou "stereo" na descricao do instrumento. O nome deve ser limpo.
+- Adicione "Esquerda" ou "Direita" apenas se o audio estiver claramente e inegavelmente isolado de um lado.
 
 Se o audio estiver em silencio, muito baixo, ou nao for possivel identificar, use category "outro" e confidence baixo, nao invente.
 """
@@ -130,16 +92,18 @@ Watch out for common articulation and timbre traps:
 - Real drums produce sounds WITHOUT defined musical pitch (kick, snare, hi-hat, cymbals). If clear musical notes are present, even with a percussive attack, do NOT classify it as drums.
 - If a typically monophonic instrument (flute, sax, trumpet) is playing chords or multiple simultaneous notes, it is probably a sampler or synth imitating that timbre. Use category "synth" or "teclado" and describe the timbre and rhythmic/harmonic role in instrument (e.g. 'rhythmic flute-like synth', 'brass sampler chords').
 - Always prioritize the PRESENCE OR ABSENCE OF PITCHED MUSICAL NOTES as the main criterion for distinguishing drums from other instruments.
+- NEVER include words like "mono" or "stereo" in the instrument description. The name must be clean.
+- Add "Left" or "Right" only if the audio is clearly and undeniably panned to one side.
 
 If the audio is silent, too quiet, or cannot be identified, use category "outro" and low confidence; do not invent.
 """
 
 
-def build_default_prompt(output_language="pt"):
+def build_default_prompt(output_language: str = "pt") -> str:
     return DEFAULT_PROMPT_EN if output_language == "en" else DEFAULT_PROMPT_PT
 
 
-def load_prompt(output_language="pt"):
+def load_prompt(output_language: str = "pt") -> str:
     """Le o prompt de analise do arquivo analysis_prompt.txt se existir,
     caso contrario usa o prompt padrao hardcoded."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -157,7 +121,7 @@ def load_prompt(output_language="pt"):
     return build_default_prompt(output_language)
 
 
-def build_chaining_prompt(panns_result, output_language="pt"):
+def build_chaining_prompt(panns_result: Dict[str, Any], output_language: str = "pt") -> str:
     """
     Constrói o prompt para o modo 'Híbrido com Review'.
     Injeta o resultado do PANNs (modelo local) para que o Gemini possa refinar e polir a resposta,
@@ -184,6 +148,7 @@ Your task is to LISTEN to the audio and REVIEW the local model's prediction.
 - Help POLISH and refine the "instrument" description based on what you actually hear in the stem.
 - If you agree with the local model, output a polished version of its category and instrument description.
 - Only change the "category" if the local model is clearly and undeniably wrong (e.g., local model heard "vocal" but you clearly hear a "shaker/percussion").
+- NEVER include words like "mono" or "stereo" in the instrument description. The name must be clean. Add "Left" or "Right" only if it is clearly panned to one side.
 
 Respond ONLY with valid JSON exactly in this format:
 {{
@@ -209,6 +174,7 @@ Sua tarefa e OUVIR o audio e REVISAR a previsao do modelo local.
 - Ajude a POLIR e refinar a descricao do "instrument" (instrumento) baseado na sua propria analise da stem e na opiniao do modelo local.
 - Se voce concorda com a analise local, retorne uma versao polida da categoria e instrumento dele.
 - Mude a "category" (categoria) apenas se o modelo local estiver clara e inegavelmente errado (ex: o modelo local ouviu "vocal" mas voce ouve nitidamente uma "percussao/shaker").
+- NUNCA inclua palavras como "mono" ou "stereo" na descricao do instrumento. O nome deve ser limpo. Adicione "Esquerda" ou "Direita" apenas se o audio estiver claramente isolado de um lado.
 
 Responda APENAS com um JSON valido, sem markdown, exatamente neste formato:
 {{
@@ -221,9 +187,18 @@ Responda APENAS com um JSON valido, sem markdown, exatamente neste formato:
     return prompt
 
 
-def classify_track(client, audio_path, models=None, segment_seconds=8, keep_temp=False,
-                    retries_per_model=2, search_start_seconds=None, search_duration_seconds=None,
-                    on_model_failed=None, output_language="pt"):
+def classify_track(
+    client: Any,
+    audio_path: str,
+    models: Optional[List[str]] = None,
+    segment_seconds: float = 8,
+    keep_temp: bool = False,
+    retries_per_model: int = 2,
+    search_start_seconds: Optional[float] = None,
+    search_duration_seconds: Optional[float] = None,
+    on_model_failed: Optional[Callable[[str], None]] = None,
+    output_language: str = "pt"
+) -> Dict[str, Any]:
     """
     Fluxo completo: acha o trecho de maior energia no arquivo (local, sem IA),
     corta ele pra um wav temporario curto, gera uma versao leve (mono/24kHz)
@@ -279,8 +254,14 @@ def classify_track(client, audio_path, models=None, segment_seconds=8, keep_temp
     return result
 
 
-def classify_audio(client, audio_path, models=None, retries_per_model=2, on_model_failed=None,
-                   output_language="pt"):
+def classify_audio(
+    client: Any,
+    audio_path: str,
+    models: Optional[List[str]] = None,
+    retries_per_model: int = 2,
+    on_model_failed: Optional[Callable[[str], None]] = None,
+    output_language: str = "pt"
+) -> Dict[str, Any]:
     """Le um arquivo de audio do disco e manda pro Gemini (via bytes inline).
 
     Mantido por compatibilidade com test_batch.py / uso direto. Nao faz
@@ -299,9 +280,16 @@ def classify_audio(client, audio_path, models=None, retries_per_model=2, on_mode
                                  output_language=output_language)
 
 
-def classify_audio_bytes(client, audio_bytes, mime_type="audio/wav", models=None,
-                         retries_per_model=2, on_model_failed=None, output_language="pt",
-                         custom_prompt=None):
+def classify_audio_bytes(
+    client: Any,
+    audio_bytes: bytes,
+    mime_type: str = "audio/wav",
+    models: Optional[List[str]] = None,
+    retries_per_model: int = 2,
+    on_model_failed: Optional[Callable[[str], None]] = None,
+    output_language: str = "pt",
+    custom_prompt: Optional[str] = None
+) -> Dict[str, Any]:
     """Manda os bytes do audio direto pro Gemini (sem passar por disco/upload)
     e retorna o dict já parseado (ou dict com 'error').
 
@@ -323,9 +311,7 @@ def classify_audio_bytes(client, audio_bytes, mime_type="audio/wav", models=None
     if models is None:
         models = MODELOS_FALLBACK
 
-    ERROS_TRANSITORIOS = ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "DeadlineExceeded", "timeout")
-
-    erros_por_modelo = {}
+    erros_por_modelo: Dict[str, str] = {}
 
     prompt_to_use = custom_prompt if custom_prompt is not None else load_prompt(output_language)
 
@@ -404,9 +390,9 @@ def main():
 
     models = args.models.split(",") if args.models else None
 
-    load_dotenv()
-    if os.path.exists(_PARENT_ENV):
-        load_dotenv(_PARENT_ENV)
+    from _bootstrap import load_env
+    load_env()
+    
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         print("ERRO: variavel GEMINI_API_KEY nao encontrada.")

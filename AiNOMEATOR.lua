@@ -43,6 +43,9 @@ if lang == "" then lang = "en" end -- default to English
 local saved_panns_threads = reaper.GetExtState("AiNOMEATOR", "panns_threads")
 if saved_panns_threads == "" then saved_panns_threads = "1" end
 
+local saved_panns_workers = reaper.GetExtState("AiNOMEATOR", "panns_workers")
+if saved_panns_workers == "" then saved_panns_workers = "4" end
+
 local backend = reaper.GetExtState("AiNOMEATOR", "backend")
 if backend == "" then backend = "gemini" end
 
@@ -55,11 +58,26 @@ if current_theme == "" then current_theme = "default" end
 local saved_show_advanced = reaper.GetExtState("AiNOMEATOR", "show_advanced")
 local show_advanced = (saved_show_advanced == "true")
 
+local saved_create_folders = reaper.GetExtState("AiNOMEATOR", "create_folders")
+local create_folders = (saved_create_folders == "true")
+
+local saved_delete_silent = reaper.GetExtState("AiNOMEATOR", "delete_silent")
+local delete_silent = (saved_delete_silent == "true")
+
+local saved_import_cues = reaper.GetExtState("AiNOMEATOR", "import_cues")
+local import_cues = (saved_import_cues == "true")
+
 
 local strings = {
   en = {
     only_selected = "Only selected",
     sort_tracks = "Sort tracks",
+    create_folders = "Intelligent folders",
+    delete_silent = "Delete absolute silence",
+    import_cues = "Import cues",
+    tip_create_folders = "Automatically groups tracks into instrument folders.",
+    tip_delete_silent = "Deletes tracks that contain only absolute silence.",
+    tip_import_cues = "Import media cues/markers from WAV files as project markers.",
     analysis_mode = "Analysis Mode:",
     mode_fast = "Fast",
     mode_detailed = "Detailed",
@@ -144,6 +162,12 @@ local strings = {
   pt = {
     only_selected = "Apenas sel.",
     sort_tracks = "Ordenar inst.",
+    create_folders = "Criar pastas",
+    delete_silent = "Apagar silêncio",
+    import_cues = "Passar marcadores",
+    tip_create_folders = "Agrupa automaticamente as faixas em pastas de instrumentos.",
+    tip_delete_silent = "Apaga faixas que contêm apenas silêncio absoluto (pico zero).",
+    tip_import_cues = "Importa marcações/cues dos arquivos WAV como marcadores do projeto.",
     analysis_mode = "Modo de Análise:",
     mode_fast = "Rápida",
     mode_detailed = "Detalhada",
@@ -989,6 +1013,43 @@ local script_running = true
 local inputs
 
 
+local function import_track_media_cues(track)
+  -- 1. Salvar seleção atual de itens
+  local selected_items = {}
+  local num_sel_items = reaper.CountSelectedMediaItems(0)
+  for i = 0, num_sel_items - 1 do
+    selected_items[i+1] = reaper.GetSelectedMediaItem(0, i)
+  end
+  
+  -- 2. Deselecionar todos os itens
+  reaper.SelectAllMediaItems(0, false)
+  
+  -- 3. Selecionar itens do track especificado (apenas se tiverem áudio/take ativo e não forem MIDI)
+  local num_items = reaper.CountTrackMediaItems(track)
+  local selected_any = false
+  for i = 0, num_items - 1 do
+    local item = reaper.GetTrackMediaItem(track, i)
+    local take = reaper.GetActiveTake(item)
+    if take and not reaper.TakeIsMIDI(take) then
+      reaper.SetMediaItemSelected(item, true)
+      selected_any = true
+    end
+  end
+  
+  -- 4. Rodar a ação nativa 40361 se algum item foi selecionado
+  if selected_any then
+    reaper.Main_OnCommand(40361, 0) -- Item: Import item media cues as project markers
+  end
+  
+  -- 5. Restaurar a seleção de itens original
+  reaper.SelectAllMediaItems(0, false)
+  for _, item in ipairs(selected_items) do
+    if reaper.ValidatePtr(item, "MediaItem*") then
+      reaper.SetMediaItemSelected(item, true)
+    end
+  end
+end
+
 local function start_analysis()
   track_info = {} -- Reseta o estado para evitar acúmulo de dados entre execuções
   if current_theme ~= "custom" then
@@ -1173,6 +1234,16 @@ local function start_analysis()
     )
   end
 
+  if backend == "panns" or backend == "hybrid_heuristic" or backend == "hybrid_chaining" then
+    if lang == "pt" then
+      log("  [!] Inicializando modelo PANNs (~300MB)...")
+      log("  [!] Pode demorar de 10 a 30 segundos na primeira execução...")
+    else
+      log("  [!] Initializing PANNs model (~300MB)...")
+      log("  [!] This might take 10 to 30 seconds on the first run...")
+    end
+  end
+
   os.execute(launch_cmd)
 
   local log_read_pos = 0    -- byte offset ate onde ja lemos o log
@@ -1243,6 +1314,7 @@ local function start_analysis()
     local track_instruments = {}
     local color_groups = {}
     local color_rgb = {}
+    local tracks_to_delete = {}
 
     for line in io.lines(result_path) do
       if line ~= "" then
@@ -1256,7 +1328,13 @@ local function start_analysis()
 
         local info = idx and track_info[idx]
         if info then
-          if status == "ok" and instrument and instrument ~= "" then
+          if status == "silence" then
+            info.status = "silence"
+            processed_tracks[idx] = true
+            if delete_silent then
+              table.insert(tracks_to_delete, info.track)
+            end
+          elseif status == "ok" and instrument and instrument ~= "" then
             local newname = capitalize(instrument)
             reaper.GetSetMediaTrackInfo_String(info.track, "P_NAME", newname, true)
 
@@ -1359,6 +1437,60 @@ local function start_analysis()
     if sort_tracks then
       log("› reordering tracks by instrument family...")
       sort_project_tracks(track_categories, track_instruments)
+    end
+
+    if create_folders then
+      log("› grouping tracks into instrument folders...")
+      local i = 0
+      local current_folder = ""
+      while i < reaper.CountTracks(0) do
+        local tr = reaper.GetTrack(0, i)
+        local cat = track_categories[tr]
+        if cat and cat ~= "" and cat ~= current_folder and cat ~= "pastas" and cat ~= "efeitos" and cat ~= "outro" then
+          reaper.InsertTrackAtIndex(i, true)
+          local folder_tr = reaper.GetTrack(0, i)
+          local folder_name = cat:upper()
+          reaper.GetSetMediaTrackInfo_String(folder_tr, "P_NAME", folder_name, true)
+          reaper.SetMediaTrackInfo_Value(folder_tr, "I_FOLDERDEPTH", 1)
+          
+          local col = config_colors["pastas"]
+          if col then
+            reaper.SetTrackColor(folder_tr, reaper.ColorToNative(col[1], col[2], col[3]) | 0x1000000)
+          end
+          
+          current_folder = cat
+          
+          if i > 0 then
+            local last_tr = reaper.GetTrack(0, i - 1)
+            local current_depth = reaper.GetMediaTrackInfo_Value(last_tr, "I_FOLDERDEPTH")
+            reaper.SetMediaTrackInfo_Value(last_tr, "I_FOLDERDEPTH", current_depth - 1)
+          end
+        end
+        i = i + 1
+      end
+      local final_total = reaper.CountTracks(0)
+      if final_total > 0 and current_folder ~= "" then
+        local last_tr = reaper.GetTrack(0, final_total - 1)
+        local current_depth = reaper.GetMediaTrackInfo_Value(last_tr, "I_FOLDERDEPTH")
+        reaper.SetMediaTrackInfo_Value(last_tr, "I_FOLDERDEPTH", current_depth - 1)
+      end
+    end
+
+    if delete_silent and #tracks_to_delete > 0 then
+      log(string.format("› deleting %d silent tracks...", #tracks_to_delete))
+      for _, tr in ipairs(tracks_to_delete) do
+        reaper.DeleteTrack(tr)
+      end
+    end
+
+    if import_cues then
+      log("› importing media cues/markers...")
+      for idx, info in pairs(track_info) do
+        if info.audio then
+          log(string.format("  + importing cues for: %s", info.name))
+          import_track_media_cues(info.track)
+        end
+      end
     end
 
     reaper.PreventUIRefresh(-1)
@@ -1473,25 +1605,30 @@ local layout = {
   sort_tracks = { x = 30, y = 160, w = 125, h = 20, cb_x = 30, cb_y = 165, cb_size = 18 },
   only_selected = { x = 165, y = 160, w = 125, h = 20, cb_x = 165, cb_y = 165, cb_size = 18 },
   
+  create_folders = { x = 30, y = 185, w = 125, h = 20, cb_x = 30, cb_y = 190, cb_size = 18 },
+  delete_silent = { x = 165, y = 185, w = 125, h = 20, cb_x = 165, cb_y = 190, cb_size = 18 },
+  
+  import_cues = { x = 30, y = 210, w = 260, h = 20, cb_x = 30, cb_y = 215, cb_size = 18 },
+  
   -- Rádios do modo de análise (lado a lado, deslocados)
-  mode_detailed = { x = 30, y = 215, w = 125, h = 20, cb_x = 30, cb_y = 220, cb_size = 18 },
-  mode_fast = { x = 165, y = 215, w = 125, h = 20, cb_x = 165, cb_y = 220, cb_size = 18 },
+  mode_detailed = { x = 30, y = 265, w = 125, h = 20, cb_x = 30, cb_y = 270, cb_size = 18 },
+  mode_fast = { x = 165, y = 265, w = 125, h = 20, cb_x = 165, cb_y = 270, cb_size = 18 },
   
   -- Rádios do backend de análise (deslocados)
-  backend_label_y = 270,
-  backend_start_y = 292,
+  backend_label_y = 320,
+  backend_start_y = 342,
   backend_spacing_y = 25,
   backend_cb_x = 30,
   backend_cb_size = 18,
   
   -- Theme Selector (deslocado)
-  theme_selector = { x = 30, y = 490, w = 260, h = 30 },
+  theme_selector = { x = 30, y = 540, w = 260, h = 30 },
   
   -- Outros Botões (deslocados)
   toggle_view = { x = 160, y = 105, w = 55, h = 24 },
   copy_logs = { x = 220, y = 105, w = 70, h = 24 },
-  analyze = { x = 30, y = 645, w = 260, h = 36 },
-  close = { x = 30, y = 620, w = 260, h = 36 }
+  analyze = { x = 30, y = 695, w = 260, h = 36 },
+  close = { x = 30, y = 670, w = 260, h = 36 }
 }
 
 -- Layout do modo compacto (painel avançado fechado): logo -> botão Analisar -> toggle -> aviso -> créditos
@@ -1561,9 +1698,9 @@ only_selected = false
 sort_tracks = (saved_sort_tracks == "true")
 analysis_mode = "detailed"
 inputs = {
-  { label = t("thread_label"), val = "1", placeholder = "1-20", is_numeric = true, limit = 2, x = -1000, y = -1000, w = 1, h = 1 },
-  { label = t("prompt_label"), val = "", placeholder = t("prompt_placeholder"), is_numeric = false, limit = 100, x = 30, y = 570, w = 260, h = 30 },
-  { label = t("local_thread_label"), val = saved_panns_threads, placeholder = "1-16", is_numeric = true, limit = 2, x = 30, y = 420, w = 260, h = 30 }
+  { label = t("thread_label"), val = saved_panns_workers, placeholder = "1-20", is_numeric = true, limit = 2, x = -1000, y = -1000, w = 1, h = 1 },
+  { label = t("prompt_label"), val = "", placeholder = t("prompt_placeholder"), is_numeric = false, limit = 100, x = 30, y = 620, w = 260, h = 30 },
+  { label = t("local_thread_label"), val = saved_panns_threads, placeholder = "1-16", is_numeric = true, limit = 2, x = 30, y = 470, w = 260, h = 30 }
 }
 
 local function refresh_language_labels()
@@ -2075,14 +2212,59 @@ local function draw_gui()
       gfx.x, gfx.y = opt_s.cb_x + 28, opt_s.cb_y + 1
       gfx.drawstr(t("sort_tracks"))
       
+      -- Checkbox "Criar pastas"
+      local opt_f = layout.create_folders
+      if in_rect(opt_f.x, opt_f.y, opt_f.w, opt_f.h) then tooltip_to_draw = t("tip_create_folders") end
+      gfx.r, gfx.g, gfx.b = 0.17, 0.17, 0.17
+      gfx.rect(opt_f.cb_x, opt_f.cb_y, opt_f.cb_size, opt_f.cb_size, 1) -- fill
+      gfx.r, gfx.g, gfx.b = 0.27, 0.27, 0.27
+      gfx.rect(opt_f.cb_x, opt_f.cb_y, opt_f.cb_size, opt_f.cb_size, 0) -- border
+      if create_folders then
+        gfx.r, gfx.g, gfx.b = 0.53, 0.0, 0.08
+        gfx.rect(opt_f.cb_x + 3, opt_f.cb_y + 3, opt_f.cb_size - 6, opt_f.cb_size - 6, 1)
+      end
+      gfx.r, gfx.g, gfx.b = 0.85, 0.85, 0.85
+      gfx.x, gfx.y = opt_f.cb_x + 28, opt_f.cb_y + 1
+      gfx.drawstr(t("create_folders"))
+
+      -- Checkbox "Apagar silencio"
+      local opt_d = layout.delete_silent
+      if in_rect(opt_d.x, opt_d.y, opt_d.w, opt_d.h) then tooltip_to_draw = t("tip_delete_silent") end
+      gfx.r, gfx.g, gfx.b = 0.17, 0.17, 0.17
+      gfx.rect(opt_d.cb_x, opt_d.cb_y, opt_d.cb_size, opt_d.cb_size, 1) -- fill
+      gfx.r, gfx.g, gfx.b = 0.27, 0.27, 0.27
+      gfx.rect(opt_d.cb_x, opt_d.cb_y, opt_d.cb_size, opt_d.cb_size, 0) -- border
+      if delete_silent then
+        gfx.r, gfx.g, gfx.b = 0.53, 0.0, 0.08
+        gfx.rect(opt_d.cb_x + 3, opt_d.cb_y + 3, opt_d.cb_size - 6, opt_d.cb_size - 6, 1)
+      end
+      gfx.r, gfx.g, gfx.b = 0.85, 0.85, 0.85
+      gfx.x, gfx.y = opt_d.cb_x + 28, opt_d.cb_y + 1
+      gfx.drawstr(t("delete_silent"))
+      
+      -- Checkbox "Passar marcadores"
+      local opt_c = layout.import_cues
+      if in_rect(opt_c.x, opt_c.y, opt_c.w, opt_c.h) then tooltip_to_draw = t("tip_import_cues") end
+      gfx.r, gfx.g, gfx.b = 0.17, 0.17, 0.17
+      gfx.rect(opt_c.cb_x, opt_c.cb_y, opt_c.cb_size, opt_c.cb_size, 1) -- fill
+      gfx.r, gfx.g, gfx.b = 0.27, 0.27, 0.27
+      gfx.rect(opt_c.cb_x, opt_c.cb_y, opt_c.cb_size, opt_c.cb_size, 0) -- border
+      if import_cues then
+        gfx.r, gfx.g, gfx.b = 0.53, 0.0, 0.08
+        gfx.rect(opt_c.cb_x + 3, opt_c.cb_y + 3, opt_c.cb_size - 6, opt_c.cb_size - 6, 1)
+      end
+      gfx.r, gfx.g, gfx.b = 0.85, 0.85, 0.85
+      gfx.x, gfx.y = opt_c.cb_x + 28, opt_c.cb_y + 1
+      gfx.drawstr(t("import_cues"))
+      
       -- Linha divisória
       gfx.r, gfx.g, gfx.b = 0.2, 0.2, 0.2
-      gfx.line(30, 190, 290, 190)
+      gfx.line(30, 240, 290, 240)
 
       -- Modo de Análise Label
       gfx.setfont(1, "Segoe UI", 11, 98) -- Bold
       gfx.r, gfx.g, gfx.b = 0.65, 0.65, 0.65
-      gfx.x, gfx.y = 30, 200
+      gfx.x, gfx.y = 30, 250
       gfx.drawstr(t("analysis_mode"))
       gfx.setfont(1, "Segoe UI", 11)
 
@@ -2118,7 +2300,7 @@ local function draw_gui()
 
       -- Linha divisória
       gfx.r, gfx.g, gfx.b = 0.2, 0.2, 0.2
-      gfx.line(30, 245, 290, 245)
+      gfx.line(30, 295, 290, 295)
 
       -- Backend de Análise Label
       gfx.setfont(1, "Segoe UI", 11, 98) -- Bold
@@ -2148,10 +2330,10 @@ local function draw_gui()
 
       -- Linha divisória
       gfx.r, gfx.g, gfx.b = 0.2, 0.2, 0.2
-      gfx.line(30, 395, 290, 395)
+      gfx.line(30, 445, 290, 445)
 
       -- Linha divisória após as threads
-      gfx.line(30, 460, 290, 460)
+      gfx.line(30, 510, 290, 510)
 
       -- Theme Selector Label
       gfx.setfont(1, "Segoe UI", 10)
@@ -2183,7 +2365,7 @@ local function draw_gui()
 
       -- Linha divisória após o Theme
       gfx.r, gfx.g, gfx.b = 0.2, 0.2, 0.2
-      gfx.line(30, 535, 290, 535)
+      gfx.line(30, 585, 290, 585)
 
       -- Campos de Texto
       for i, inp in ipairs(inputs) do
@@ -2271,8 +2453,8 @@ local function draw_gui()
     -- Info de resumo econômico/faixas dinâmico
     local n_jobs, n_skipped = update_analysis_summary_cached()
     gfx.setfont(1, "Segoe UI", 11)
-    local summary_y1 = show_advanced and 610 or 150
-    local summary_y2 = show_advanced and 622 or 162
+    local summary_y1 = show_advanced and 660 or 150
+    local summary_y2 = show_advanced and 672 or 162
     if n_jobs == 0 then
       gfx.r, gfx.g, gfx.b = 0.8, 0.6, 0.2 -- Amarelo/Dourado suave
       gfx.x, gfx.y = 30, summary_y1
@@ -2310,8 +2492,8 @@ local function draw_gui()
     local note2 = t("experimental_notice_2")
     local note1_w = gfx.measurestr(note1)
     local note2_w = gfx.measurestr(note2)
-    local note_y1 = show_advanced and 695 or COMPACT_NOTE_Y1
-    local note_y2 = show_advanced and 706 or COMPACT_NOTE_Y2
+    local note_y1 = show_advanced and 745 or COMPACT_NOTE_Y1
+    local note_y2 = show_advanced and 756 or COMPACT_NOTE_Y2
     gfx.x = (gfx.w - note1_w) / 2
     gfx.y = note_y1
     gfx.drawstr(note1)
@@ -2324,7 +2506,7 @@ local function draw_gui()
     local credit_text = "by jasko"
     local cr_w, cr_h = gfx.measurestr(credit_text)
     local cr_x = (gfx.w - cr_w) / 2
-    local cr_y = show_advanced and 720 or COMPACT_CREDITS_Y
+    local cr_y = show_advanced and 780 or COMPACT_CREDITS_Y
     gfx.r, gfx.g, gfx.b = 1.0, 1.0, 1.0
     gfx.x = cr_x
     gfx.y = cr_y
@@ -2493,7 +2675,7 @@ local function update_gui()
         reaper.SetExtState("AiNOMEATOR", "show_advanced", show_advanced and "true" or "false", true)
         
         -- Redimensionar a janela
-        local expected_h = show_advanced and 770 or COMPACT_WINDOW_H
+        local expected_h = show_advanced and 820 or COMPACT_WINDOW_H
         resize_window(expected_h)
         return "redraw"
       end
@@ -2511,6 +2693,27 @@ local function update_gui()
         if in_rect(opt_s.x, opt_s.y, opt_s.w, opt_s.h) then
           sort_tracks = not sort_tracks
           reaper.SetExtState("AiNOMEATOR", "sort_tracks", sort_tracks and "true" or "false", true)
+          return "redraw"
+        end
+
+        local opt_f = layout.create_folders
+        if in_rect(opt_f.x, opt_f.y, opt_f.w, opt_f.h) then
+          create_folders = not create_folders
+          reaper.SetExtState("AiNOMEATOR", "create_folders", create_folders and "true" or "false", true)
+          return "redraw"
+        end
+
+        local opt_d = layout.delete_silent
+        if in_rect(opt_d.x, opt_d.y, opt_d.w, opt_d.h) then
+          delete_silent = not delete_silent
+          reaper.SetExtState("AiNOMEATOR", "delete_silent", delete_silent and "true" or "false", true)
+          return "redraw"
+        end
+
+        local opt_c = layout.import_cues
+        if in_rect(opt_c.x, opt_c.y, opt_c.w, opt_c.h) then
+          import_cues = not import_cues
+          reaper.SetExtState("AiNOMEATOR", "import_cues", import_cues and "true" or "false", true)
           return "redraw"
         end
 
@@ -2595,7 +2798,7 @@ local function update_gui()
       gfx.setfont(1, "Segoe UI", 10)
       local cr_w, cr_h = gfx.measurestr("by jasko")
       local cr_x = (gfx.w - cr_w) / 2
-      local cr_y = show_advanced and 701 or COMPACT_CREDITS_Y
+      local cr_y = show_advanced and 780 or COMPACT_CREDITS_Y
       if in_rect(cr_x, cr_y, cr_w, cr_h) then
         open_url("https://jasko.dev")
         return "redraw"
@@ -2633,7 +2836,7 @@ local function update_gui()
             end
           end
           gui_state = "config"
-          local expected_h = show_advanced and 770 or 300
+          local expected_h = show_advanced and 820 or 300
           resize_window(expected_h)
           return "redraw"
         end
@@ -2715,10 +2918,34 @@ local function run_gui_loop()
     return
   end
 
+  -- Ajustar layout de threads/workers baseado no backend
+  if backend == "panns" then
+    inputs[1].x = 30
+    inputs[1].y = 470
+    inputs[1].w = 125
+    inputs[1].h = 30
+
+    inputs[3].x = 165
+    inputs[3].y = 470
+    inputs[3].w = 125
+    inputs[3].h = 30
+  else
+    inputs[1].x = -1000
+    inputs[1].y = -1000
+    inputs[1].w = 1
+    inputs[1].h = 1
+    inputs[1].val = "1"
+
+    inputs[3].x = 30
+    inputs[3].y = 470
+    inputs[3].w = 260
+    inputs[3].h = 30
+  end
+
   -- Travar o resize
   local expected_h = 680
   if gui_state == "config" then
-    expected_h = show_advanced and 770 or 300
+    expected_h = show_advanced and 820 or 300
   end
   if gfx.w ~= 320 or gfx.h ~= expected_h then
     resize_window(expected_h)
@@ -2734,6 +2961,9 @@ local function run_gui_loop()
     if workers < 1 then workers = 1
     elseif workers > 20 then workers = 20 end
     inputs[1].val = tostring(workers)
+    if backend == "panns" then
+      reaper.SetExtState("AiNOMEATOR", "panns_workers", inputs[1].val, true)
+    end
 
     local local_threads = tonumber(sanitize_local_thread_input(inputs[3].val)) or 1
     if local_threads < 1 then local_threads = 1
@@ -2756,7 +2986,7 @@ local function run_gui_loop()
 end
 
 -- Inicializa a tela grafica customizada centralizada na tela
-local win_w, win_h = 320, 740
+local win_w, win_h = 320, show_advanced and 820 or 300
 local win_x, win_y = 150, 150 -- Fallback padrão se my_getViewport não estiver disponível
 
 if reaper.my_getViewport then
